@@ -65,8 +65,11 @@ WEBHOOK_SECRET = "e2e-webhook-secret-32-bytes-AAAAAAAAAAAAAAAAAA"
 # A password that satisfies the strong-password validator (>= 12 chars, mixed).
 TEST_PASSWORD = "correct horse battery staple"
 
-# Welcome bonus per BRIEF.md §7 = 200 ₽ = 20_000 kop.
-WELCOME_KOP = 20_000
+# Welcome bonus total:
+#   - 100 ₽ welcome_anonymize при signup (BRIEF_v2_pivot.md § 5, pay-per-use pivot)
+#   - 200 ₽ welcome (legacy gateway credit) при verify-email
+# = 300 ₽ = 30_000 kop total после verify.
+WELCOME_KOP = 30_000
 
 # Top-up amount we drive through ЮKassa: 1500 ₽ = 150_000 kop.
 # Kept >1000 ₽ so the same fixture is reusable for АКТ tests later
