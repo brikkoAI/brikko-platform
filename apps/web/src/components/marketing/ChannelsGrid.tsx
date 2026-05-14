@@ -39,6 +39,9 @@ type Channel = {
   disabledHint?: string;
 };
 
+// CTA labels — короткие action-фразы (8-15 chars). Унифицированный паттерн
+// «<глагол/предлог> <реестр> →» помещается в кнопку без обрезки на любых
+// breakpoint'ах (карточки от 320px). Shield disabled — Wait-list без стрелки.
 const CHANNELS: Channel[] = [
   {
     iconKey: 'shield',
@@ -57,7 +60,7 @@ const CHANNELS: Channel[] = [
     install: 'curl install.brikko.ru/studio.sh | bash',
     href: '/studio',
     hrefIsInternal: true,
-    ctaLabel: 'Подробнее о Studio',
+    ctaLabel: 'Подробнее →',
   },
   {
     iconKey: 'cli',
@@ -65,15 +68,18 @@ const CHANNELS: Channel[] = [
     audience: 'Управление Studio из терминала',
     install: 'npm install -g brikko-cli',
     href: 'https://www.npmjs.com/package/brikko-cli',
-    ctaLabel: 'npmjs.com/brikko-cli',
+    ctaLabel: 'На npm →',
   },
   {
     iconKey: 'skill',
     name: 'PII Skill',
     audience: 'Для Claude Code, Cursor, Codex агентов',
-    install: 'git clone github.com/brikkoAI/brikko-pii-skill ~/.claude/skills/',
+    // Полный путь установки (~/.claude/skills/) — в README репозитория.
+    // На карточке показываем только clone-часть, чтобы команда умещалась
+    // целиком без overflow на 320px ширины карточки.
+    install: 'git clone github.com/brikkoAI/brikko-pii-skill',
     href: 'https://github.com/brikkoAI/brikko-pii-skill',
-    ctaLabel: 'GitHub репозиторий',
+    ctaLabel: 'На GitHub →',
   },
   {
     iconKey: 'n8n',
@@ -81,7 +87,7 @@ const CHANNELS: Channel[] = [
     audience: 'Маскинг в n8n workflows',
     install: 'npm install n8n-nodes-brikko',
     href: 'https://www.npmjs.com/package/n8n-nodes-brikko',
-    ctaLabel: 'npmjs.com/n8n-nodes-brikko',
+    ctaLabel: 'На npm →',
   },
   {
     iconKey: 'presidio',
@@ -89,7 +95,7 @@ const CHANNELS: Channel[] = [
     audience: 'Российские entities для Microsoft Presidio',
     install: 'pip install presidio-ru-recognizers',
     href: 'https://pypi.org/project/presidio-ru-recognizers/',
-    ctaLabel: 'pypi.org/presidio-ru-recognizers',
+    ctaLabel: 'На PyPI →',
   },
 ];
 

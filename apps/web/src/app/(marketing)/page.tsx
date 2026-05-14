@@ -14,7 +14,10 @@ import { FAQ } from '@/components/marketing/FAQ';
  *   3. StudioAnchor — детальный анонс Studio v0.3.0 для AI-команд.
  *   4. Features — 6 differentiator-карточек (Natasha NER, RU entities,
  *      reversible unmask, локальная обработка, observability, 152-ФЗ).
- *   5. PricingCards — 4 тарифа (Free / Pro 290 / Team 1990 / Enterprise).
+ *   5. PricingCards — единый pay-as-you-go тариф 0,02 ₽/запрос
+ *      (BRIEF_v2_pivot.md §5, CEO confirmation 2026-05-14). Subscription
+ *      tiers (Pro 290 / Team 1990) убраны — не выдерживают adoption data,
+ *      создают payment friction. Welcome bonus 100 ₽ при регистрации.
  *   6. FAQ.
  *
  * Что убрано с главной после pivot:
