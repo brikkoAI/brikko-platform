@@ -302,11 +302,15 @@ async def test_e2e_first_paying_customer(
     assert account_row.balance_kopecks == WELCOME_KOP + WELCOME_ANONYMIZE_KOP
     welcome_log = (await db.execute(select(WelcomeCreditsLog))).scalar_one_or_none()
     assert welcome_log is not None
+    # После pay-per-use pivot (BRIEF_v2_pivot.md § 5) теперь 2 welcome TOPUP-
+    # транзакции: welcome_anonymize при signup + legacy welcome при verify.
+    # Берём именно legacy welcome (ref_id "welcome:..."), не "welcome-anonymize:".
     welcome_tx = (
         await db.execute(
             select(Transaction).where(
                 Transaction.account_id == account_row.id,
                 Transaction.type == TransactionKind.TOPUP,
+                Transaction.ref_id.like("welcome:%"),
             )
         )
     ).scalar_one()
