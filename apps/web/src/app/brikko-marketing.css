@@ -1640,3 +1640,28 @@
     transition: none;
   }
 }
+
+/* ─── PricingCards 3-tier grid (Cream Studio v6, 2026-05-15) ─────────────
+ * Mobile-first column stack → 3 равные колонки от 768px.
+ * Highlighted (Pay-as-you-go) центральная карточка не сдвигается на mobile
+ * (translateY убран), потому что в column-stack нет соседей справа/слева,
+ * над которыми её надо приподнимать. */
+.brikko-pricing-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (min-width: 768px) {
+  .brikko-pricing-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+}
+
+@media (max-width: 767px) {
+  .brikko-pricing-tier--highlighted {
+    transform: none !important;
+  }
+}

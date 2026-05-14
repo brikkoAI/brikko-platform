@@ -160,7 +160,7 @@ export function ChannelsGrid() {
 
 function ChannelCard({ channel }: { channel: Channel }) {
   return (
-    <article className="brikko-card-outer" style={{ display: 'flex' }}>
+    <article className="brikko-card-outer" style={{ display: 'flex', minWidth: 0 }}>
       <div
         className="brikko-card-inner"
         style={{
@@ -169,6 +169,7 @@ function ChannelCard({ channel }: { channel: Channel }) {
           flexDirection: 'column',
           flex: 1,
           gap: 16,
+          minWidth: 0,
         }}
       >
         <div
@@ -220,24 +221,34 @@ function ChannelCard({ channel }: { channel: Channel }) {
           {channel.audience}
         </p>
 
-        {channel.disabled ? (
-          <div
-            style={{
-              padding: '14px 16px',
-              background: 'var(--bg-tier-2)',
-              border: '1px solid var(--hairline)',
-              borderRadius: 12,
-              fontFamily: 'Geist Mono, JetBrains Mono, ui-monospace, monospace',
-              fontSize: 12,
-              color: 'var(--fg-faint)',
-              letterSpacing: '0.02em',
-            }}
-          >
-            {channel.install}
-          </div>
-        ) : (
-          <CodeCopyButton command={channel.install} />
-        )}
+        {/*
+         * minWidth: 0 на flex child обязателен — без него CodeCopyButton
+         * с nowrap-кодом внутри распирает родителя (flex children по
+         * умолчанию имеют min-width: auto = ширине содержимого). С min-width: 0
+         * code-блок честно ужимается до ширины карточки и скроллится
+         * горизонтально, COPY-кнопка справа остаётся видимой на 320px карточке
+         * (PII Skill `git clone …`, Studio `curl install.brikko.ru/studio.sh | bash`).
+         */}
+        <div style={{ minWidth: 0 }}>
+          {channel.disabled ? (
+            <div
+              style={{
+                padding: '14px 16px',
+                background: 'var(--bg-tier-2)',
+                border: '1px solid var(--hairline)',
+                borderRadius: 12,
+                fontFamily: 'Geist Mono, JetBrains Mono, ui-monospace, monospace',
+                fontSize: 12,
+                color: 'var(--fg-faint)',
+                letterSpacing: '0.02em',
+              }}
+            >
+              {channel.install}
+            </div>
+          ) : (
+            <CodeCopyButton command={channel.install} />
+          )}
+        </div>
 
         <div style={{ flex: 1, minHeight: 4 }} />
 

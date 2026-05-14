@@ -1,66 +1,110 @@
 import Link from 'next/link';
-import { CreditCard, Gift, Key, Sparkles } from 'lucide-react';
+import type { Route } from 'next';
+import { Check } from 'lucide-react';
 
 /**
- * PricingCards — Cream Studio v6 + pay-per-use pivot (2026-05-14).
+ * PricingCards — 3-tier (Cream Studio v6, 2026-05-15).
  *
- * CEO confirmation 2026-05-14: убираем Free/Pro 290/Team 1990/Enterprise
- * subscription-модель. Одна крупная карточка с pay-as-you-go 0,02 ₽/запрос.
+ * CEO решение 2026-05-15: возвращаем подписочные тарифы. Pay-as-you-go
+ * остаётся как entry point (highlighted/recommended в центре), Pro/Team
+ * — подписки для активных пользователей и команд.
  *
- * Почему pay-per-use вместо subscription:
- *   1. Self-serve adoption — нулевой commitment, нет «а вдруг не нужно подписываться».
- *   2. 6 distribution channels (Shield/Studio/CLI/Skill/n8n/Presidio) делят один
- *      backend → один API ключ для всего, один тариф для всего.
- *   3. Welcome 100 ₽ покрывает 5 000 запросов — за это время пользователь
- *      решает «брать или нет» без риска.
- *   4. 100 запросов/день free навсегда — anchoring под одиночек, у которых
- *      pet-проекты с маленькой нагрузкой.
+ * Линейка:
+ *   - Pay-as-you-go (центр, recommended) — 0,02 ₽/запрос, low commitment.
+ *   - Pro (слева) — 290 ₽/мес, unlimited для физика.
+ *   - Team (справа) — 1 490 ₽/мес, до 10 человек + audit log + MCP.
+ *   - Enterprise — mailto-link под cards, без цены на лендинге.
  *
- * UX-обоснование одной карточки:
- *   - 4 карточки subscription tier ставили выбор «какой тариф» раньше выбора
- *     «вообще регистрироваться». Pay-per-use снимает этот выбор полностью.
- *   - Крупная «0,02 ₽» в Source Serif 4 (как Hero H1) — типографический
- *     якорь, привлекающий fovea в первые 200ms scroll'а.
- *   - Sub-«50 запросов за 1 ₽» переводит абстрактные доли копейки в шкалу
- *     «сколько за 1 ₽» — единица измерения, которую мозг чтения «считает»
- *     быстрее чем 0,02.
+ * UX-обоснование:
+ *   - Pay-as-you-go в центре, а не первой слева: визуально-весовой центр
+ *     ряда (золотое сечение для тройки), highlight border + чуть приподнят
+ *     (translateY) — Stripe-like recommended pattern.
+ *   - На mobile (column stack) — Pay-as-you-go первой, потому что это
+ *     entry-friendly tier (нулевой commitment).
+ *   - 4 bullets на карточку — потолок для быстрого scan (одного фокус-такта
+ *     без re-fixation). 5+ заставляет читателя «считать», что увеличивает
+ *     decision-fatigue на pricing-screen.
+ *   - Enterprise как mailto-note, а не 4-я карточка — это honest signal,
+ *     что enterprise-deal делается per-customer, не self-serve. Маркетингу
+ *     4 карточки в ряд читаются как «у нас всё для всех», что для соло-стартапа
+ *     с runway 10 мес — false promise.
  *
  * Связанные изменения:
- *   - /pricing страница (showHeader=false) — обновлена тот же блок.
- *   - FAQ.tsx — не трогаем, там Pro/Team в контексте старой gateway-модели
- *     не упоминаются (Pro Privacy ≠ subscription tier — это feature-флаг).
+ *   - /pricing страница (showHeader=false) использует тот же компонент.
+ *   - FAQ.tsx — может содержать упоминания старых tier; переписать отдельной
+ *     задачей.
  */
 
 interface PricingCardsProps {
   /**
-   * Показывать ли встроенный header «Тарифы / Pay-as-you-go».
-   * На главной (`/`) — true (это самостоятельная секция). На странице
-   * `/pricing` — false, чтобы не дублировать H1 hero-блока.
+   * Показывать ли встроенный header «Тарифы». На главной (`/`) — true.
+   * На странице `/pricing` — false (там свой hero-блок).
    */
   showHeader?: boolean;
 }
 
-interface Bullet {
-  Icon: typeof Sparkles;
-  text: string;
+type TierId = 'pro' | 'payg' | 'team';
+
+interface Tier {
+  id: TierId;
+  name: string;
+  price: string;
+  priceUnit: string;
+  subline: string;
+  bullets: string[];
+  ctaLabel: string;
+  ctaHref: Route;
+  highlighted?: boolean;
+  badge?: string;
 }
 
-const BULLETS: Bullet[] = [
+const TIERS: Tier[] = [
   {
-    Icon: Sparkles,
-    text: '100 запросов в день бесплатно навсегда — для одиночек',
+    id: 'pro',
+    name: 'Pro',
+    price: '290 ₽',
+    priceUnit: 'в месяц',
+    subline: 'Безлимит для одного пользователя',
+    bullets: [
+      'Unlimited маскинг',
+      'Все entities (ИНН, паспорт, ФИО, СНИЛС, ОГРН, телефон, банк)',
+      'Natasha NER для русских ФИО',
+      '5 устройств / API-ключей',
+    ],
+    ctaLabel: 'Оформить Pro',
+    ctaHref: '/signup?tier=pro' as Route,
   },
   {
-    Icon: Gift,
-    text: 'Welcome 100 ₽ при регистрации = 5 000 запросов попробовать',
+    id: 'payg',
+    name: 'Pay-as-you-go',
+    price: '0,02 ₽',
+    priceUnit: 'за запрос',
+    subline: '50 запросов за 1 ₽ · 5 000 за 100 ₽',
+    bullets: [
+      '100 запросов в день бесплатно навсегда',
+      'Welcome 100 ₽ при регистрации',
+      'Top-up рублями через ЮKassa, без VISA / MC',
+      'Все 6 артефактов через единый API-ключ',
+    ],
+    ctaLabel: 'Начать бесплатно',
+    ctaHref: '/signup' as Route,
+    highlighted: true,
+    badge: 'Рекомендуем',
   },
   {
-    Icon: CreditCard,
-    text: 'Top-up через ЮKassa, минимум 100 ₽, без карт VISA / MC',
-  },
-  {
-    Icon: Key,
-    text: 'Один тариф для Shield, CLI, Studio, n8n, Skill — единый API ключ',
+    id: 'team',
+    name: 'Team',
+    price: '1 490 ₽',
+    priceUnit: 'в месяц',
+    subline: 'Для команд до 10 человек',
+    bullets: [
+      'Всё из Pro + 10 пользователей',
+      'Общие пресеты команды',
+      'Audit log',
+      'MCP-серверы Bitrix24 / 1С',
+    ],
+    ctaLabel: 'Оформить Team',
+    ctaHref: '/signup?tier=team' as Route,
   },
 ];
 
@@ -82,71 +126,98 @@ export function PricingCards({ showHeader = true }: PricingCardsProps = {}) {
             Тарифы
           </span>
           <h2 className="brikko-h2">
-            <span>Pay-as-</span>
-            <span className="brikko-h2-italic">you-go.</span>
+            <span>Платите так, как </span>
+            <span className="brikko-h2-italic">удобно.</span>
           </h2>
           <p className="brikko-lede" style={{ marginBottom: 0 }}>
-            Никаких подписок. Платишь только за то, что используешь. Один тариф
-            для всех каналов Brikko: Shield в браузере, Studio, CLI, n8n, Claude
-            Code Skill.
+            Начните с pay-as-you-go без подписки. Если запросов в день станет
+            больше — Pro закроет личное использование, Team — команду до 10 человек.
           </p>
         </header>
       ) : null}
 
       <div
         style={{
-          maxWidth: 720,
+          maxWidth: 1200,
           margin: '0 auto',
           padding: '0 6vw',
           position: 'relative',
           zIndex: 2,
         }}
       >
-        <PayPerUseCard />
+        <div className="brikko-pricing-grid">
+          {TIERS.map((tier) => (
+            <PricingTierCard key={tier.id} tier={tier} />
+          ))}
+        </div>
       </div>
 
-      <ProPassNote />
+      <EnterpriseNote />
     </section>
   );
 }
 
-function PayPerUseCard() {
+function PricingTierCard({ tier }: { tier: Tier }) {
+  const isHighlighted = tier.highlighted ?? false;
+
   return (
     <article
-      className="brikko-card-outer"
+      className={
+        isHighlighted
+          ? 'brikko-card-outer brikko-pricing-tier--highlighted'
+          : 'brikko-card-outer'
+      }
       style={{
-        background: 'var(--accent-1)',
-        border: '1px solid var(--accent-1)',
+        display: 'flex',
+        position: 'relative',
+        minWidth: 0,
+        ...(isHighlighted
+          ? {
+              background: 'var(--accent-1)',
+              border: '1px solid var(--accent-1)',
+              // Чуть приподнят над соседями — Stripe-like recommended pattern.
+              // На mobile (<768px) transform убирается через CSS media-query
+              // в brikko-pricing-tier--highlighted: в column-stack нет смысла
+              // «приподнимать» над соседями, которые сверху/снизу.
+              transform: 'translateY(-8px)',
+              boxShadow: '0 12px 32px -8px rgba(0, 0, 0, 0.12)',
+            }
+          : {}),
       }}
     >
       <div
         className="brikko-card-inner"
         style={{
-          padding: '48px 40px 40px',
+          padding: isHighlighted ? '36px 28px 32px' : '32px 28px 28px',
           display: 'flex',
           flexDirection: 'column',
-          position: 'relative',
+          flex: 1,
+          minWidth: 0,
+          gap: 20,
         }}
       >
-        <span
-          style={{
-            position: 'absolute',
-            top: -10,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'var(--accent-1)',
-            color: 'var(--bg-base)',
-            padding: '4px 14px',
-            borderRadius: 9999,
-            fontSize: 10,
-            fontWeight: 500,
-            letterSpacing: '0.2em',
-            textTransform: 'uppercase',
-            fontFamily: 'Geist Mono, JetBrains Mono, ui-monospace, monospace',
-          }}
-        >
-          Pay-as-you-go
-        </span>
+        {tier.badge ? (
+          <span
+            style={{
+              position: 'absolute',
+              top: -10,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: 'var(--fg-primary)',
+              color: 'var(--bg-base)',
+              padding: '4px 14px',
+              borderRadius: 9999,
+              fontSize: 10,
+              fontWeight: 500,
+              letterSpacing: '0.2em',
+              textTransform: 'uppercase',
+              fontFamily: 'Geist Mono, JetBrains Mono, ui-monospace, monospace',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {tier.badge}
+          </span>
+        ) : null}
 
         <header style={{ textAlign: 'center' }}>
           <p
@@ -159,16 +230,16 @@ function PayPerUseCard() {
               margin: 0,
             }}
           >
-            Единый тариф
+            {tier.name}
           </p>
 
           <div
             style={{
-              marginTop: 16,
+              marginTop: 12,
               display: 'flex',
               alignItems: 'baseline',
               justifyContent: 'center',
-              gap: 12,
+              gap: 8,
               flexWrap: 'wrap',
             }}
           >
@@ -176,14 +247,14 @@ function PayPerUseCard() {
               style={{
                 fontFamily: '"Source Serif 4", "PP Editorial New", Georgia, serif',
                 fontWeight: 400,
-                fontSize: 'clamp(56px, 8vw, 96px)',
+                fontSize: isHighlighted ? 'clamp(44px, 5vw, 64px)' : 'clamp(36px, 4vw, 52px)',
                 lineHeight: 1,
-                letterSpacing: '-0.035em',
+                letterSpacing: '-0.03em',
                 color: 'var(--fg-primary)',
                 fontVariantNumeric: 'tabular-nums',
               }}
             >
-              0,02 ₽
+              {tier.price}
             </span>
             <span
               style={{
@@ -191,52 +262,53 @@ function PayPerUseCard() {
                   '"Source Serif 4", "PP Editorial New", Georgia, serif',
                 fontStyle: 'italic',
                 fontWeight: 400,
-                fontSize: 'clamp(20px, 2.4vw, 28px)',
+                fontSize: 'clamp(14px, 1.6vw, 18px)',
                 color: 'var(--fg-muted)',
                 letterSpacing: '-0.01em',
               }}
             >
-              за запрос
+              {tier.priceUnit}
             </span>
           </div>
 
           <p
             style={{
-              marginTop: 16,
-              fontSize: 15,
-              lineHeight: 1.55,
+              marginTop: 12,
+              fontSize: 13,
+              lineHeight: 1.5,
               color: 'var(--fg-muted)',
               fontVariantNumeric: 'tabular-nums',
+              minHeight: 40,
             }}
           >
-            50 запросов за 1 ₽ · 5 000 запросов за 100 ₽
+            {tier.subline}
           </p>
         </header>
 
         <div
           style={{
-            margin: '32px 0 0',
-            paddingTop: 32,
+            paddingTop: 20,
             borderTop: '1px solid var(--hairline)',
           }}
         >
           <ul
             style={{
               padding: 0,
+              margin: 0,
               listStyle: 'none',
               display: 'flex',
               flexDirection: 'column',
-              gap: 14,
+              gap: 12,
             }}
           >
-            {BULLETS.map(({ Icon, text }) => (
+            {tier.bullets.map((text) => (
               <li
                 key={text}
                 style={{
                   display: 'flex',
                   alignItems: 'flex-start',
-                  gap: 12,
-                  fontSize: 15,
+                  gap: 10,
+                  fontSize: 14,
                   lineHeight: 1.5,
                   color: 'var(--fg-primary)',
                 }}
@@ -245,76 +317,77 @@ function PayPerUseCard() {
                   aria-hidden="true"
                   style={{
                     flexShrink: 0,
-                    width: 32,
-                    height: 32,
+                    width: 20,
+                    height: 20,
+                    marginTop: 1,
                     borderRadius: 9999,
                     border: '1px solid var(--hairline)',
-                    background: 'var(--bg-base)',
+                    background: isHighlighted ? 'var(--bg-base)' : 'var(--bg-tier-2)',
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     color: 'var(--fg-primary)',
                   }}
                 >
-                  <Icon size={16} strokeWidth={1.5} />
+                  <Check size={12} strokeWidth={2} />
                 </span>
-                <span style={{ paddingTop: 6 }}>{text}</span>
+                <span>{text}</span>
               </li>
             ))}
           </ul>
         </div>
 
-        <div style={{ marginTop: 36, display: 'flex', justifyContent: 'center' }}>
-          <Link
-            href="/signup"
-            className="brikko-btn brikko-btn-primary"
-            style={{ minWidth: 240, justifyContent: 'center' }}
-          >
-            Создать аккаунт
-          </Link>
-        </div>
+        <div style={{ flex: 1, minHeight: 8 }} />
 
-        <p
-          style={{
-            marginTop: 16,
-            textAlign: 'center',
-            fontSize: 13,
-            color: 'var(--fg-muted)',
-          }}
+        <Link
+          href={tier.ctaHref}
+          className={
+            isHighlighted
+              ? 'brikko-btn brikko-btn-primary'
+              : 'brikko-btn brikko-btn-secondary'
+          }
+          style={{ justifyContent: 'center', width: '100%' }}
         >
-          Чек самозанятого (НПД) после каждого пополнения через ЮKassa.
-        </p>
+          {tier.ctaLabel}
+        </Link>
       </div>
     </article>
   );
 }
 
-function ProPassNote() {
+function EnterpriseNote() {
   return (
     <div
       style={{
-        maxWidth: 720,
-        margin: '32px auto 0',
+        maxWidth: 1200,
+        margin: '40px auto 0',
         padding: '0 6vw',
         position: 'relative',
         zIndex: 2,
       }}
     >
-      <div
+      <p
         style={{
-          border: '1px dashed var(--hairline)',
-          borderRadius: 20,
-          padding: '20px 24px',
-          background: 'transparent',
-          fontSize: 14,
-          lineHeight: 1.55,
-          color: 'var(--fg-muted)',
           textAlign: 'center',
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: 'var(--fg-muted)',
+          margin: 0,
         }}
       >
-        Когда станет много запросов в день — мы добавим Pro Pass с unlimited.
-        Сейчас, по факту adoption, pay-per-use удобнее всем.
-      </div>
+        Нужно больше — выделенный SLA, on-prem, корпоративный договор? Напишите:{' '}
+        <a
+          href="mailto:hello@brikko.ru"
+          style={{
+            color: 'var(--fg-primary)',
+            textDecoration: 'underline',
+            textDecorationThickness: 1,
+            textUnderlineOffset: 3,
+          }}
+        >
+          hello@brikko.ru
+        </a>
+      </p>
     </div>
   );
 }
