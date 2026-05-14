@@ -1,0 +1,708 @@
+/* ============================================================
+ * Brikko Dashboard Shell — стили для /app/* pages (Sprint 13.6).
+ *
+ * Импортируется в globals.css. Все классы префикснуты `brikko-app-` —
+ * чтобы не пересекаться с marketing (`brikko-`) и dashboard-Tailwind
+ * слоем существующих компонентов.
+ *
+ * Использует те же CSS-vars (--bg-base / --fg-primary / --accent-1 /
+ * --hairline / etc), что marketing + auth — single source of truth для
+ * темы Cream Studio v6. dashboard и marketing разделяют localStorage
+ * `brikko-theme`, поэтому выбор темы переходит между ними.
+ *
+ * UX-обоснование структуры shell'а:
+ *   - Sidebar слева (а не top-bar как marketing) — dashboard это
+ *     long-session productivity tool с 6 разделами; пользователю нужен
+ *     постоянный быстрый доступ к навигации, а не «открыть hamburger».
+ *   - Active link через accent-1 vertical bar + лёгкий bg-elevated:
+ *     соответствует Linear / Vercel / Stripe-стилю; визуальный шум
+ *     минимальный, читаемость высокая.
+ *   - User-block внизу sidebar'а: pattern Notion / Slack / Linear —
+ *     гарантированное место для logout/settings, не конкурирует с
+ *     основной навигацией.
+ *   - Theme-toggle рядом с user-block, тогда в одном «settings cluster»
+ *     внизу sidebar'а.
+ * ============================================================ */
+
+/* Root flex для всего shell'а: sidebar + main */
+.brikko-app-root {
+  background: var(--bg-base);
+  color: var(--fg-primary);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-app-shell {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.brikko-app-shell ::selection {
+  background: var(--fg-primary);
+  color: var(--bg-base);
+}
+
+.brikko-app-shell *:focus-visible {
+  outline: 2px solid var(--accent-1);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+/* ============================================================
+ * SIDEBAR — desktop only (lg+); mobile использует bottom-tab-nav
+ * ============================================================ */
+.brikko-app-sidebar {
+  display: none;
+  width: 248px;
+  flex-shrink: 0;
+  background: var(--bg-base);
+  border-right: 1px solid var(--hairline);
+  padding: 28px 16px 20px;
+  flex-direction: column;
+  gap: 24px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+@media (min-width: 1024px) {
+  .brikko-app-sidebar {
+    display: flex;
+    /* Fixed sidebar — не двигается при скролле, как в Notion / Linear / Stripe.
+       Sticky не работал из-за min-height:0 на shell flex-родителе → теряется
+       контекст высоты. Fixed надёжнее: жёстко прибит к viewport. */
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    z-index: 30;
+  }
+  /* Освобождаем место под sidebar в общем layout — чтобы main не пролезал
+     под него. */
+  .brikko-app-main {
+    margin-left: 248px;
+  }
+}
+
+.brikko-app-brand {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  text-decoration: none;
+  padding: 4px 8px;
+  transition: color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-app-brand:hover {
+  color: var(--fg-muted);
+}
+
+.brikko-app-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.brikko-app-nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition:
+    color 200ms var(--ease-in-out-quart),
+    background 200ms var(--ease-in-out-quart);
+}
+
+.brikko-app-nav-link:hover {
+  color: var(--fg-primary);
+  background: var(--bg-elevated);
+}
+
+.brikko-app-nav-link[aria-current='page'] {
+  color: var(--fg-primary);
+  background: var(--bg-elevated);
+}
+
+.brikko-app-nav-link[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--accent-1);
+  border-radius: 0 2px 2px 0;
+}
+
+.brikko-app-nav-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+/* Sidebar bottom cluster: balance-pill + theme-toggle + user-block */
+.brikko-app-sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+}
+
+.brikko-app-balance-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--fg-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+  transition:
+    border-color 240ms var(--ease-out-quint),
+    background 400ms var(--ease-in-out-quart);
+}
+
+.brikko-app-balance-pill:hover {
+  border-color: var(--hairline-hi);
+}
+
+.brikko-app-balance-label {
+  color: var(--fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.brikko-app-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+  transition: background 200ms var(--ease-in-out-quart);
+}
+
+.brikko-app-user-row:hover {
+  background: var(--bg-elevated);
+}
+
+.brikko-app-user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: var(--accent-1);
+  color: var(--bg-base);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+
+.brikko-app-user-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.brikko-app-user-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.005em;
+}
+
+.brikko-app-user-email {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brikko-app-user-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 8px;
+  right: 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--hairline-hi);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.18);
+  z-index: 60;
+}
+
+.brikko-app-user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--fg-primary);
+  text-align: left;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 180ms var(--ease-in-out-quart);
+}
+
+.brikko-app-user-menu-item:hover {
+  background: var(--bg-elevated);
+}
+
+/* ============================================================
+ * MAIN — content area
+ * ============================================================ */
+.brikko-app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-base);
+  transition: background 400ms var(--ease-in-out-quart);
+}
+
+.brikko-app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg-base);
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+@media (min-width: 1024px) {
+  .brikko-app-topbar {
+    padding: 16px 32px;
+    /* desktop: balance уже в sidebar — minimal topbar (только context-name) */
+  }
+}
+
+.brikko-app-topbar-context {
+  font-size: 13px;
+  color: var(--fg-muted);
+  letter-spacing: -0.005em;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.brikko-app-topbar-mobile-brand {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 500;
+  font-size: 19px;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  text-decoration: none;
+}
+
+@media (min-width: 1024px) {
+  .brikko-app-topbar-mobile-brand {
+    display: none;
+  }
+}
+
+.brikko-app-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 24px 40px;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .brikko-app-content {
+    padding: 36px 40px 48px;
+  }
+}
+
+/* ============================================================
+ * MOBILE BOTTOM NAV — shows < lg, hidden on desktop
+ * ============================================================ */
+.brikko-app-mobile-nav {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-base);
+  padding: 6px 0 max(env(safe-area-inset-bottom), 6px);
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+@media (min-width: 1024px) {
+  .brikko-app-mobile-nav {
+    display: none;
+  }
+}
+
+.brikko-app-mobile-nav-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  text-decoration: none;
+  transition: color 200ms var(--ease-in-out-quart);
+}
+
+.brikko-app-mobile-nav-link[aria-current='page'] {
+  color: var(--fg-primary);
+}
+
+.brikko-app-mobile-nav-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ============================================================
+ * DASHBOARD CARDS — primary surface для большинства dashboard-данных
+ *
+ * Используем те же patterns, что marketing — `.brikko-card-bezel`
+ * (двойная рамка) для primary featured-карточек, `.brikko-card-flat`
+ * (одинарная) для compact-list. Здесь — dashboard-specific shortcuts:
+ *   .brikko-app-card — стандартная карточка раздела (header + body).
+ *   .brikko-app-stat — большая stat-цифра в overview.
+ *   .brikko-app-table — grayscale таблица, hairline-borders.
+ * ============================================================ */
+.brikko-app-card {
+  background: var(--bg-base);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 20px 24px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint);
+}
+
+.brikko-app-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.brikko-app-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-primary);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.brikko-app-card-desc {
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+  margin: 4px 0 0;
+}
+
+.brikko-app-stat {
+  background: var(--bg-base);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint);
+}
+
+.brikko-app-stat-label {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.brikko-app-stat-value {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.brikko-app-stat-delta {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * PAGE HEADER — title + actions row
+ * ============================================================ */
+.brikko-app-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+}
+
+.brikko-app-page-title {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+  color: var(--fg-primary);
+  margin: 0 0 6px;
+}
+
+.brikko-app-page-title-italic {
+  font-style: italic;
+}
+
+.brikko-app-page-subtitle {
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 56ch;
+}
+
+/* ============================================================
+ * TABLE — grayscale, hairline borders, monospace numerics
+ * ============================================================ */
+.brikko-app-table-wrap {
+  background: var(--bg-base);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  overflow: hidden;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint);
+}
+
+.brikko-app-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.brikko-app-table thead th {
+  background: var(--bg-elevated);
+  padding: 10px 16px;
+  text-align: left;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.brikko-app-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--fg-primary);
+  vertical-align: middle;
+}
+
+.brikko-app-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.brikko-app-table tbody tr:hover td {
+  background: var(--bg-elevated);
+}
+
+.brikko-app-table-num {
+  font-variant-numeric: tabular-nums;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brikko-app-root,
+  .brikko-app-sidebar,
+  .brikko-app-main,
+  .brikko-app-nav-link,
+  .brikko-app-balance-pill,
+  .brikko-app-user-row,
+  .brikko-app-card,
+  .brikko-app-stat,
+  .brikko-app-table-wrap,
+  .brikko-app-mobile-nav,
+  .brikko-app-mobile-nav-link {
+    transition: none !important;
+  }
+}
+
+/* ============================================================
+ * COMPATIBILITY LAYER — Tailwind utility overrides внутри dashboard.
+ *
+ * Большинство существующих dashboard-pages написаны на Tailwind с явными
+ * `bg-white`, `border-gray-200`, `text-gray-900`. Чтобы не переписывать
+ * каждый файл, переаливаем самые частые utility-classes на cream-tokens
+ * только внутри `.brikko-app-root`. В light theme выглядит идентично
+ * предыдущему виду; в dark theme — корректно инвертируется.
+ *
+ * Why scoped: marketing/auth используют те же tokens напрямую (через
+ * CSS-vars), а dashboard — через Tailwind. Локальный override изолирует
+ * это от других контекстов (storybook / preview / cream-page).
+ * ============================================================ */
+
+/* Surfaces */
+.brikko-app-root .bg-white {
+  background-color: var(--bg-base);
+}
+.brikko-app-root .bg-gray-50 {
+  background-color: var(--bg-elevated);
+}
+.brikko-app-root .bg-gray-100 {
+  background-color: var(--bg-elevated);
+}
+.brikko-app-root .bg-gray-200 {
+  background-color: var(--bg-tier-2);
+}
+
+/* Borders */
+.brikko-app-root .border-gray-200 {
+  border-color: var(--hairline);
+}
+.brikko-app-root .border-gray-300 {
+  border-color: var(--hairline-hi);
+}
+.brikko-app-root .border-gray-100 {
+  border-color: var(--hairline);
+}
+
+/* Hover-interactive bg */
+.brikko-app-root .hover\:bg-gray-50:hover,
+.brikko-app-root .hover\:bg-gray-100:hover {
+  background-color: var(--bg-elevated);
+}
+.brikko-app-root .hover\:border-gray-400:hover {
+  border-color: var(--fg-muted);
+}
+
+/* Foreground text */
+.brikko-app-root .text-gray-900 {
+  color: var(--fg-primary);
+}
+.brikko-app-root .text-gray-800 {
+  color: var(--fg-primary);
+}
+.brikko-app-root .text-gray-700 {
+  color: var(--fg-primary);
+}
+.brikko-app-root .text-gray-600 {
+  color: var(--fg-muted);
+}
+.brikko-app-root .text-gray-500 {
+  color: var(--fg-muted);
+}
+.brikko-app-root .text-gray-400 {
+  color: var(--fg-faint);
+}
+.brikko-app-root .text-gray-300 {
+  color: var(--fg-faint);
+}
+
+/* Placeholders */
+.brikko-app-root .placeholder\:text-gray-400::placeholder {
+  color: var(--fg-faint);
+}
+
+/* Disabled-state bg */
+.brikko-app-root .disabled\:bg-gray-100:disabled {
+  background-color: var(--bg-elevated);
+}
+.brikko-app-root .disabled\:text-gray-400:disabled {
+  color: var(--fg-faint);
+}
+
+/* Form inputs — `bg-white` уже покрыт выше; ensure focus-ring видимый */
+.brikko-app-root input,
+.brikko-app-root textarea,
+.brikko-app-root select {
+  color-scheme: light dark;
+}
+
+/* Default `<table>` / Tailwind `<th>` шрифт уже good — но усилим для dashboard */
+.brikko-app-root table {
+  color: var(--fg-primary);
+}
+
+/* В dark theme `bg-brand-600` (cream) с `text-white` (тоже cream) дают
+ * нечитаемый контраст. Делаем `text-white` поверх cream-background → espresso.
+ * Точечно — только для primary-CTA (bg-brand-600 / bg-brand-700). */
+[data-theme='dark'] .brikko-app-root .bg-brand-600.text-white,
+[data-theme='dark'] .brikko-app-root .bg-brand-700.text-white,
+[data-theme='dark'] .brikko-app-root .hover\:bg-brand-700.text-white {
+  color: #1c1917;
+}
+
+/* Shadows: смягчаем тень на dark theme — она перекраивает hairline */
+[data-theme='dark'] .brikko-app-root .shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.04);
+}
+[data-theme='dark'] .brikko-app-root .shadow-md {
+  box-shadow:
+    0 4px 12px -2px rgba(0, 0, 0, 0.5),
+    0 2px 4px -2px rgba(0, 0, 0, 0.3);
+}
+

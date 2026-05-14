@@ -1,0 +1,44 @@
+# Append this snippet to /opt/brikko/docker-compose.prod.yml on Aeza.
+#
+# How the network works on Aeza
+# -----------------------------
+# CEO's PC runs `ssh -R 8090:127.0.0.1:9090 root@aeza`. This makes Aeza's
+# loopback :8090 forward to PC's :9090. The bot needs to reach 127.0.0.1:8090,
+# so we put the bot container on the host network — that way it shares
+# Aeza's loopback with sshd's reverse-forward listener.
+#
+# Why not bridge networking + host.docker.internal?
+# -------------------------------------------------
+# Linux's host.docker.internal requires extra_hosts magic AND the SSH
+# server would need to listen on 0.0.0.0:8090 (GatewayPorts=clientspecified).
+# That exposes the daemon endpoint to the public internet — even though
+# auth is enforced, it's a needless attack surface. host network keeps the
+# tunnel endpoint loopback-only.
+
+services:
+  bridge-bot:
+    build:
+      context: ../../   # repo root — Dockerfile.bot uses apps/bridge/* paths
+      dockerfile: apps/bridge/Dockerfile.bot
+    image: brikko/bridge-bot:latest
+    container_name: brikko-bridge-bot
+    restart: unless-stopped
+    network_mode: host          # share loopback with sshd reverse-forward
+    environment:
+      # Telegram bot token — set in /opt/brikko/.env
+      BRIDGE_BOT_BOT_TOKEN: "${BRIDGE_BOT_BOT_TOKEN}"
+      BRIDGE_BOT_BOT_USERNAME: "${BRIDGE_BOT_BOT_USERNAME:-brikko_agent_bot}"
+      # Daemon endpoint = SSH reverse tunnel landing on Aeza loopback.
+      BRIDGE_BOT_DAEMON_URL: "http://127.0.0.1:8090"
+      BRIDGE_BOT_DB_PATH: "/data/bridge.db"
+    volumes:
+      - bridge-bot-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  bridge-bot-data:
+    driver: local

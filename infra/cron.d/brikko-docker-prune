@@ -1,0 +1,24 @@
+#!/bin/bash
+# Destination: /etc/cron.weekly/brikko-docker-prune
+# Frequency:   Sunday ~06:25 (cron.weekly anacron slot).
+# Purpose:     Освободить диск от Docker unused images + build cache > 168h.
+#              Был инцидент 2026-05-13: build cache набрался до 85% диска,
+#              CI/CD деплои начали падать на этапе build.
+#
+# Установка на новом хосте:
+#   sudo install -m 0755 infra/cron.d/brikko-docker-prune \
+#                        /etc/cron.weekly/brikko-docker-prune
+#   sudo bash /etc/cron.weekly/brikko-docker-prune    # smoke
+#
+# Просмотр логов:
+#   journalctl -t brikko-prune --since '1 week ago' --no-pager
+#
+# См. также: infra/RUNBOOK.md → "Disk full on Reg.ru".
+
+set -euo pipefail
+
+# -a удаляет ВСЕ unused images (не только dangling), --filter "until=168h" —
+# только те, что старше недели (защита от удаления свежесобранных образов
+# до того как они подцепятся к контейнерам). Контейнеры / volumes / networks
+# НЕ трогаем — этим занимается docker compose отдельно.
+/usr/bin/docker system prune -af --filter "until=168h" 2>&1 | logger -t brikko-prune

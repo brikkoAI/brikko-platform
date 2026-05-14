@@ -1,0 +1,43 @@
+## Brikko Bridge — Telegram bot (runs on Aeza).
+## Talks to the daemon on the CEO's PC over the SSH reverse tunnel
+## established by docker-compose's "bridge-tunnel" service (Aeza:8090 →
+## CEO PC :9090). Bot config defaults daemon_url to http://127.0.0.1:8090,
+## so we just need ``--network host`` OR an internal docker network where
+## the tunnel sshd-side endpoint is reachable as 127.0.0.1.
+##
+## We use a minimal Python 3.12 slim base; bot is pure Python + aiogram +
+## httpx + aiosqlite. ~80 MB final image.
+
+FROM python:3.12-slim AS base
+
+# Don't run as root in the container. Use uid 10001 to avoid colliding
+# with anything the host might map.
+RUN groupadd --system --gid 10001 brikko \
+ && useradd --system --uid 10001 --gid brikko --create-home brikko
+
+WORKDIR /app
+
+# Install only what the bot needs — daemon-only deps (fastapi, uvicorn) are
+# omitted to keep the image small.
+COPY apps/bridge/requirements.bot.txt /tmp/requirements.bot.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.bot.txt \
+ && rm /tmp/requirements.bot.txt
+
+# Copy source. Order matters for cache invalidation: deps first, code last.
+COPY apps/bridge/bot     /app/bot
+COPY apps/bridge/shared  /app/shared
+
+# /data holds the SQLite db; mounted as a volume in compose.
+RUN mkdir -p /data && chown -R brikko:brikko /data /app
+VOLUME ["/data"]
+
+USER brikko
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    BRIDGE_BOT_DB_PATH=/data/bridge.db
+
+# No exposed port — bot is outbound-only (Telegram long-poll + httpx
+# to daemon over the in-network tunnel endpoint).
+
+CMD ["python", "-m", "bot.main"]

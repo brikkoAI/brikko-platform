@@ -1,0 +1,384 @@
+name: Deploy Gateway (push-to-main)
+
+# Авто-деплой gateway на production-VPS (80.78.253.225) при push в main
+# с изменениями в apps/gateway/**. Заменяет ручной scripts/deploy-gateway.sh.
+#
+# Триггер: push в main с path-фильтром OR workflow_dispatch (для re-deploy
+# без code-change'ей). См. также:
+#   - deploy.yml — tag-based release (v*.*.*) с SOPS-секретами и rollback;
+#     НЕ заменяется этим workflow, остаётся как канонический prod-релиз.
+#   - scripts/deploy-gateway.sh — local fallback с CEO-машины.
+#
+# Защита от инцидента 2026-05-06 (deploy без alembic upgrade head → 503 на login
+# на 2 часа): миграции запускаются на ОДНОРАЗОВОМ контейнере с НОВЫМ image
+# ДО того как мы перезапустим текущий gateway. Если миграция упала —
+# текущий gateway остаётся жить на старом image, rollback не нужен (мы
+# не успели стартовать новый код).
+#
+# Rollback: если post-deploy healthcheck упал — автоматически откатываем
+# IMAGE_TAG на предыдущий sha (запоминается в /opt/brikko/.deploy-prev-tag).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/gateway/**'
+      - '.github/workflows/deploy-gateway.yml'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to deploy (default: latest main)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+# Один deploy gateway за раз. cancel-in-progress: false — текущему даём
+# завершиться, новый встанет в очередь. Иначе rollback может конфликтовать.
+concurrency:
+  group: deploy-gateway-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/brikko-gateway
+
+jobs:
+  # -------- Smoke pytest перед деплоем --------
+  # Полный CI (ci.yml) уже прогнался на PR'е до merge. Здесь — fast-feedback
+  # «текущий main компилируется и проходит unit-тесты», чтобы не катить
+  # сломанное в прод. Тестируется ПОСЛЕДНИЙ main, так что все фичи коммита
+  # уже проверены на PR; этот шаг — defence-in-depth (~3 мин).
+  test:
+    name: gateway · smoke pytest
+    runs-on: ubuntu-latest
+    # 2026-05-13: bump 8→15 — после MCP S2/S3 (300+ новых тестов) suite сам
+    # занимает 8-9 мин (без retry). Targeted retry для test_stream_happy_path
+    # может добавить ещё +30с.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/gateway
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gateway"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway_test
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+      SECRET_KEY: ci-test-secret-not-for-prod
+      SKIP_POSTGRES_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/gateway/pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: pytest (smoke — без integration/PII corpus)
+        run: |
+          pytest -q --maxfail=1 --disable-warnings \
+            --ignore=tests/integration \
+            --ignore=tests/pii_corpus \
+            -m "not slow"
+
+  # -------- Build & push Docker image на GHCR --------
+  build:
+    name: build & push
+    runs-on: ubuntu-latest
+    needs: test
+    # 2026-05-11: bump 20→40 — build с новыми deps (MCP SDK + Playwright)
+    # + Trivy scan на свежий каталог CVE регулярно превышает 20 мин
+    timeout-minutes: 40
+    outputs:
+      image_tag: ${{ steps.tag.outputs.value }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag (commit SHA)
+        id: tag
+        run: |
+          if [ -n "${{ inputs.sha }}" ]; then
+            SHA="${{ inputs.sha }}"
+          else
+            SHA="${GITHUB_SHA}"
+          fi
+          SHORT="${SHA:0:12}"
+          echo "value=sha-${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "Tag: sha-${SHORT}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # cache-from/cache-to type=gha — GitHub Actions cache, бесплатный 10 GB.
+      # Layers переиспользуются между runs → build за 1-2 мин вместо 5-7.
+      - name: Build & push gateway image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/gateway
+          file: ./apps/gateway/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha,scope=gateway-prod
+          cache-to: type=gha,mode=max,scope=gateway-prod
+          provenance: false
+
+      # Trivy CVE-scan свежего image — заменяет SAST-сторону отключённого
+      # GH Code-Scanning. Severity HIGH/CRITICAL fail'ят deploy. ignore-unfixed
+      # = не блокируем сборку на уязвимостях без upstream-патча (мы всё равно
+      # ничего с ними сделать не можем). exit-code 1 = job красный → deploy
+      # не запустится (`needs: build`).
+      - name: Trivy scan (HIGH/CRITICAL CVEs)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          vuln-type: 'os,library'
+          timeout: '8m'
+
+  # -------- Deploy to VPS (Reg.ru, /opt/brikko) --------
+  deploy:
+    name: deploy to production
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://api.brikko.ru/healthz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Подготовка SSH-ключа из GH Secret. Используется простая схема
+      # SSH_PRIVATE_KEY/SSH_HOST/SSH_USER (см. README PR'а).
+      # Параллельная инфра deploy.yml использует PROD_SSH_KEY/PROD_HOST + user
+      # deploy@/opt/voltari — не пересекается, оставлено намеренно.
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_brikko
+          chmod 600 ~/.ssh/id_brikko
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH key configured."
+
+      # Deploy logic. Все значимые шаги остаются в одном SSH-сессии,
+      # чтобы переменные (PREV_TAG, NEW_TAG) не терялись и rollback мог
+      # обратиться к ним.
+      #
+      # Последовательность:
+      #   1. Запоминаем PREV_TAG из текущего .env-файла (для rollback'а).
+      #   2. Pull нового image в registry на VPS.
+      #   3. Migrations: docker run --rm НОВЫЙ image → alembic upgrade head.
+      #      Если migration упала — текущий gateway работает на старом теге,
+      #      rollback не нужен. Workflow exit 1, healthcheck не запускается.
+      #   4. Обновляем GATEWAY_IMAGE_TAG в .env.
+      #   5. docker compose up -d gateway — rolling restart на новом image.
+      #   6. Cleanup старых images (docker image prune).
+      - name: Deploy gateway image
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          NEW_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<EOSSH
+          set -euo pipefail
+          cd /opt/brikko
+
+          # 1. Запомнить предыдущий тег (для rollback'а)
+          PREV_TAG=\$(grep -E '^GATEWAY_IMAGE_TAG=' .env 2>/dev/null | cut -d= -f2 || echo "latest")
+          if [ -z "\$PREV_TAG" ]; then PREV_TAG="latest"; fi
+          echo "Previous gateway tag: \$PREV_TAG"
+          echo "GATEWAY_IMAGE_TAG=\$PREV_TAG" > .deploy-prev-tag
+
+          # 2. Login GHCR (read-only через workflow's GITHUB_TOKEN — package public,
+          #    но если репо станет private — заменить на personal access token).
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # 3. Pull нового image
+          NEW_IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}"
+          echo "Pulling \$NEW_IMAGE..."
+          docker pull "\$NEW_IMAGE"
+
+          # 4. Migrations на новом image (одноразовый контейнер, --rm).
+          #    Старый gateway-контейнер ещё работает — пользователи не видят downtime,
+          #    миграции идут параллельно с обработкой запросов.
+          #    Идемпотентность alembic upgrade head гарантирует — если упало
+          #    на половине, повторный запуск возобновит с прерванной точки.
+          #
+          #    Note 2026-05-08: \`docker run --env-file .env\` пропускает .env
+          #    ВНУТРЬ контейнера, но shell-substitution \${POSTGRES_PASSWORD}
+          #    в командной строке ниже происходит ДО запуска контейнера.
+          #    Под set -u (см. строку 214) это падает с unbound variable если
+          #    .env не загружен в shell. Загружаем явно.
+          echo "Loading .env into shell for migration command-line substitution..."
+          set -a
+          # shellcheck disable=SC1091
+          source .env
+          set +a
+
+          echo "Running alembic upgrade head on new image..."
+          docker run --rm \\
+            --network brikko_backend-net \\
+            --env-file .env \\
+            -e DATABASE_URL="postgresql+asyncpg://\${POSTGRES_USER:-voltari}:\${POSTGRES_PASSWORD}@postgres:5432/\${POSTGRES_DB:-voltari}" \\
+            "\$NEW_IMAGE" \\
+            alembic upgrade head
+
+          # 5. Обновить GATEWAY_IMAGE_TAG в .env (используется compose-файлом)
+          if grep -q '^GATEWAY_IMAGE_TAG=' .env 2>/dev/null; then
+            sed -i "s|^GATEWAY_IMAGE_TAG=.*|GATEWAY_IMAGE_TAG=${{ needs.build.outputs.image_tag }}|" .env
+          else
+            echo "GATEWAY_IMAGE_TAG=${{ needs.build.outputs.image_tag }}" >> .env
+          fi
+
+          # 6. Rolling restart gateway. Полагаемся на docker-compose.prod.yml
+          #    с image: \$IMAGE_NAME:\${GATEWAY_IMAGE_TAG} в спецификации.
+          #    Если compose всё ещё на build: ./apps/gateway — workflow упадёт здесь
+          #    с ошибкой compose, что ожидаемо (нужно мигрировать compose-файл
+          #    на image-pull схему, см. PR description).
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --pull always gateway
+
+          # 7. Очистка старых images (>72h)
+          docker image prune -f --filter "until=72h" 2>&1 | tail -3 || true
+          EOSSH
+
+      # Healthcheck — POST /v1/auth/login с заведомо invalid creds.
+      # 401/400/422 = gateway отвечает корректно. 5xx = упал.
+      # 5 попыток с retry, потому что после restart нужно ~15-20s до readiness.
+      - name: Post-deploy healthcheck
+        id: health
+        run: |
+          set -euo pipefail
+          echo "Waiting 20s for gateway to come up..."
+          sleep 20
+          for i in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              -X POST "https://api.brikko.ru/v1/auth/login" \
+              -H "Content-Type: application/json" \
+              --data '{"email":"smoke-test-deploy@brikko.ru","password":"deliberately-wrong"}' \
+              || echo "000")
+            case "$HTTP_CODE" in
+              400|401|422)
+                echo "✓ Gateway responding HTTP $HTTP_CODE (invalid creds = expected)"
+                exit 0
+                ;;
+              *)
+                echo "Attempt $i: HTTP $HTTP_CODE — retrying in 10s..."
+                sleep 10
+                ;;
+            esac
+          done
+          echo "::error::Gateway healthcheck failed after 5 attempts (last code: $HTTP_CODE)"
+          exit 1
+
+      # Rollback: если healthcheck упал — возвращаем GATEWAY_IMAGE_TAG на
+      # предыдущее значение (запомнили в .deploy-prev-tag) и перезапускаем.
+      - name: Rollback on healthcheck failure
+        if: failure() && steps.health.conclusion == 'failure'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<'EOSSH'
+          set -euo pipefail
+          cd /opt/brikko
+          if [ ! -f .deploy-prev-tag ]; then
+            echo "::error::.deploy-prev-tag not found — manual rollback required"
+            exit 1
+          fi
+          PREV_TAG=$(grep -E '^GATEWAY_IMAGE_TAG=' .deploy-prev-tag | cut -d= -f2)
+          echo "Rolling back gateway to $PREV_TAG"
+          sed -i "s|^GATEWAY_IMAGE_TAG=.*|GATEWAY_IMAGE_TAG=$PREV_TAG|" .env
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps gateway
+          echo "Rollback complete. Verify https://api.brikko.ru manually."
+          EOSSH
+
+      # Сохраняем последние 100 строк gateway-логов в workflow run (для debug'а
+      # неудачного деплоя). Показываем независимо от исхода.
+      - name: Tail gateway logs (last 100 lines)
+        if: always()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" \
+              "docker logs --tail=100 brikko-gateway 2>&1" \
+              || echo "Failed to fetch logs"
+
+      # Defence-in-depth — стираем ключ с runner'а (он эфемерный, но всё же).
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_brikko 2>/dev/null || rm -f ~/.ssh/id_brikko
+
+      # Telegram-уведомление — опционально. Если TG_BOT_TOKEN/TG_CHAT_ID не
+      # заданы — шаг скипается без ошибки.
+      - name: Notify Telegram (optional)
+        if: always() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          STATUS: ${{ job.status }}
+          TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          MSG="Brikko gateway deploy ${TAG} → ${STATUS}%0Acommit: ${{ github.sha }}%0Aactor: @${{ github.actor }}%0Arun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "text=${MSG}" \
+            -d "parse_mode=HTML" \
+            > /dev/null || echo "Telegram notification failed (non-blocking)"

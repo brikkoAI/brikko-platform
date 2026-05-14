@@ -1,0 +1,275 @@
+# /opt/voltari/docker-compose.yml
+# Production docker-compose для Voltari MVP (один VPS).
+# Запуск:  docker compose --env-file .env up -d
+#
+# ВАЖНО:
+#   - .env лежит рядом, права 600, владелец deploy. В git его НЕТ.
+#   - postgres и redis НЕ публикуют порты наружу — только во внутренней сети.
+#   - Только caddy торчит наружу (80/443).
+#
+# Resource limits: см. infra/RUNBOOK.md → "Resource limits & VPS sizing".
+# Network segmentation: см. infra/RUNBOOK.md → "Network topology".
+
+name: voltari
+
+networks:
+  # frontend-net — то, до чего может дотянуться Caddy. Только web и gateway.
+  # Если бы случился RCE в Caddy — она НЕ видит postgres напрямую.
+  frontend-net:
+    driver: bridge
+  # backend-net — БД и кеш. Видны только gateway-у. Caddy/web сюда не подключены.
+  backend-net:
+    driver: bridge
+    internal: false   # internal:true сломает healthcheck'и из-за DNS; trade-off ОК — порты на хост всё равно не торчат
+
+volumes:
+  pg_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+services:
+  # -------- reverse proxy + auto-SSL --------
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: voltari-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data           # сертификаты Let's Encrypt
+      - caddy_config:/config
+    networks: [frontend-net]
+    depends_on:
+      - gateway
+      - web
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Resource limits — Caddy очень лёгкий, ему хватает 256 MB / 0.5 CPU.
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- API Gateway (FastAPI / Python) --------
+  gateway:
+    image: ghcr.io/bbchort/voltari-gateway:${IMAGE_TAG:-v0.1.0}
+    container_name: voltari-gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Двухсерверная архитектура (Sprint 8) — outbound proxy через WireGuard.
+      # Если задан → gateway проксирует OpenAI/Anthropic/Google вызовы через
+      # Hetzner. Если пусто (local/staging) → ходит к провайдерам напрямую.
+      # См. infra/two_server_setup.md.
+      OUTBOUND_HTTP_PROXY: ${OUTBOUND_HTTP_PROXY:-}
+      PROXIED_PROVIDERS: ${PROXIED_PROVIDERS:-openai,anthropic,google}
+    expose:
+      - "8000"
+    # Контейнер должен иметь доступ к WireGuard tunnel'у на хосте:
+    # network_mode: bridge (default) + iptables FORWARD на хосте уже разрешает
+    # traffic из docker-bridge в wg0 (host networking не требуется).
+    # См. infra/wireguard_setup.md §6 — UFW + iptables FORWARD ACCEPT для wg0.
+    networks:
+      # Подключён к ОБЕИМ сетям: frontend-net чтобы Caddy и web могли звать его,
+      # backend-net чтобы видеть postgres/redis. БД остаётся изолированной.
+      - frontend-net
+      - backend-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Alpine image не содержит curl (TD-006 closed) — используем python urllib.
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request as u; u.urlopen('http://localhost:8000/healthz').read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Resource limits — основной потребитель CPU. На 4 vCPU VPS — половина под gateway.
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # -------- Web (Next.js) --------
+  web:
+    image: ghcr.io/bbchort/voltari-web:${IMAGE_TAG:-v0.1.0}
+    container_name: voltari-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      # Должно совпадать с build-args в .github/workflows/deploy.yml.
+      # NEXT_PUBLIC_* запекаются в bundle на build, runtime override недостаточен.
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://api.brikko.ru/v1}
+      NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-https://brikko.ru}
+    expose:
+      - "3000"
+    # Web — только во frontend-net. До postgres ему дотянуться нельзя:
+    # все запросы к данным идут через gateway.
+    networks: [frontend-net]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      # Используем node fetch (wget в node:alpine standalone-образе нет).
+      # /api/health должен существовать в Next.js routes; если нет — fallback на "/".
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://localhost:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Resource limits.
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # -------- PostgreSQL 16 --------
+  postgres:
+    image: postgres:16-alpine
+    container_name: voltari-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # tuning под 4 vCPU / 8 GB
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    # Postgres ТОЛЬКО в backend-net. До неё может достучаться только gateway.
+    # Caddy/web на frontend-net физически не видят 5432.
+    networks: [backend-net]
+    # Никаких ports: — БД доступна только внутри backend-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=2GB
+      -c maintenance_work_mem=128MB
+      -c work_mem=16MB
+      -c max_connections=100
+      -c log_min_duration_statement=1000
+    # Resource limits — postgres получает половину памяти VPS.
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Redis 7 --------
+  redis:
+    image: redis:7-alpine
+    container_name: voltari-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    # Redis — только в backend-net. Виден только gateway-у.
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Resource limits.
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Promtail (TD-016) — log shipper to Grafana Cloud Loki Free --------
+  # Собирает Docker JSON-driver логи всех voltari-* контейнеров и отправляет
+  # в Grafana Cloud Loki Free (50 GB/мес бесплатно).
+  #
+  # Профиль "logs" — Promtail НЕ стартует по умолчанию (`docker compose up`),
+  # включается через `docker compose --profile logs up -d`. Это даёт
+  # возможность развернуть VPS без логов (для отладки compose-сетки), и
+  # включить Promtail отдельным шагом когда Grafana Cloud secrets готовы.
+  #
+  # Как включить:
+  #   1. Заполнить LOKI_URL, LOKI_TENANT_ID, LOKI_API_KEY в .env
+  #   2. docker compose --profile logs up -d promtail
+  #   3. Проверить логи: docker logs voltari-promtail | grep "level=info"
+  #   4. В Grafana Cloud → Explore → выбрать Loki datasource → запрос:
+  #      {app="voltari", service="gateway"} | json
+  promtail:
+    image: grafana/promtail:3.2.0
+    container_name: voltari-promtail
+    restart: unless-stopped
+    profiles: [logs]
+    command:
+      - "-config.file=/etc/promtail/config.yaml"
+      - "-config.expand-env=true"
+    environment:
+      LOKI_URL: ${LOKI_URL}
+      LOKI_TENANT_ID: ${LOKI_TENANT_ID}
+      LOKI_API_KEY: ${LOKI_API_KEY}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      HOSTNAME: ${PROMTAIL_HOSTNAME:-vps}
+    volumes:
+      - ./loki/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      # Доступ к Docker socket — для service discovery всех контейнеров.
+      # SECURITY: read-only mount, plus user в group docker — не root.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Контейнерные логи на хосте — Promtail читает их JSON-файлы напрямую.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    # Promtail — только во frontend-net (для outbound HTTPS к Grafana Cloud).
+    # До БД ему ходить не надо.
+    networks: [frontend-net]
+    # Resource limits — Promtail лёгкий, ~150 MB RAM в стабильном состоянии.
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

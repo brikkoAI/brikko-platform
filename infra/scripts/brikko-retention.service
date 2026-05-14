@@ -1,0 +1,14 @@
+[Unit]
+Description=BrikkoLens retention cleanup (delete request_log rows >56 days)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/brikko
+# Запуск через docker exec в gateway-контейнере где есть Python и DSN.
+# Шаблон: docker exec brikko-gateway python -m voltari_gateway.scripts.retention_cleanup
+ExecStart=/usr/bin/docker exec brikko-gateway python -m voltari_gateway.scripts.retention_cleanup
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=15min

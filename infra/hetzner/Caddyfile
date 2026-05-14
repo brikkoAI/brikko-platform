@@ -1,0 +1,91 @@
+# /etc/caddy/Caddyfile на Hetzner CX22 (Helsinki).
+# Зарубежный outbound proxy для OpenAI/Anthropic/Google.
+# Слушает:
+#   - 10.10.0.1:8080 — proxy для LLM-провайдеров (только через WG-туннель)
+#   - 0.0.0.0:9090   — health-check эндпойнт для UptimeRobot
+#
+# НЕ хранит логи запросов (privacy). Только WARN-уровень глобально.
+#
+# Деплой через .github/workflows/deploy-proxy.yml.
+
+{
+    admin off
+    auto_https off                 # внутренний proxy, HTTPS на этом hop не нужен
+    persist_config off
+    log {
+        output stderr
+        level WARN                  # только warn/error, никаких access-логов
+    }
+}
+
+# ════════════════════════════════════════════════════════════════════
+# LLM proxy — bind на туннельный IP (НЕ на 0.0.0.0)
+# ════════════════════════════════════════════════════════════════════
+http://10.10.0.1:8080 {
+    # OpenAI
+    handle_path /openai/* {
+        reverse_proxy https://api.openai.com {
+            header_up Host api.openai.com
+            transport http {
+                tls
+                response_header_timeout 300s
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 10s
+            }
+        }
+    }
+
+    # Anthropic
+    handle_path /anthropic/* {
+        reverse_proxy https://api.anthropic.com {
+            header_up Host api.anthropic.com
+            transport http {
+                tls
+                response_header_timeout 300s
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 10s
+            }
+        }
+    }
+
+    # Google AI (Gemini)
+    handle_path /google/* {
+        reverse_proxy https://generativelanguage.googleapis.com {
+            header_up Host generativelanguage.googleapis.com
+            transport http {
+                tls
+                response_header_timeout 300s
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 10s
+            }
+        }
+    }
+
+    # Health check внутри туннеля (для smoke-тестов с Selectel)
+    handle /healthz {
+        respond "ok" 200 {
+            close
+        }
+    }
+
+    # Всё остальное — 404
+    handle {
+        respond "Not Found" 404
+    }
+}
+
+# ════════════════════════════════════════════════════════════════════
+# Health endpoint для UptimeRobot — только /healthz, наружу 9090
+# UFW открыт для 9090. По хорошему — ограничить по UptimeRobot IP-листу.
+# ════════════════════════════════════════════════════════════════════
+:9090 {
+    handle /healthz {
+        respond "ok" 200
+    }
+    handle {
+        respond "Not Found" 404
+    }
+}

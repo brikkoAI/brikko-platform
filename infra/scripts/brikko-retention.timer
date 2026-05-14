@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily BrikkoLens retention cleanup at 03:30 UTC
+# 30 минут до бэкапа (04:00) — чтобы бэкап не включал уже удалённые row'ы.
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

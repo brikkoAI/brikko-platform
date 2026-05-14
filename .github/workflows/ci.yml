@@ -1,0 +1,583 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Один runner на ветку — старый прогон отменяем при новом push
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  # -------- Gateway (Python / FastAPI) --------
+  gateway-lint:
+    name: gateway · lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/gateway/pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install bandit
+
+      # All-or-nothing: каждый шаг запускается ВСЕГДА (if: always() +
+      # continue-on-error: true), а финальный gate проверяет outcome всех.
+      # Это ловит кейс 2026-05-01: ruff format --check скипался когда падал
+      # ruff check → 13 неотформатированных файлов копились незамеченными.
+      # См. CONTRIBUTING.md § "Что делать когда CI падает на твоём PR".
+      - name: ruff check
+        id: ruff_check
+        if: always()
+        continue-on-error: true
+        run: ruff check .
+
+      - name: ruff format --check
+        id: ruff_format
+        if: always()
+        continue-on-error: true
+        run: ruff format --check .
+
+      - name: mypy
+        id: mypy
+        # Strict проверка только production-кода. tests/ имеют отдельный
+        # relaxed override в pyproject.toml [[tool.mypy.overrides]] —
+        # legitimate (тесты могут позволить себе менее строгие типы:
+        # generator return types, untyped fixtures, missing-stubs SDK).
+        if: always()
+        continue-on-error: true
+        run: mypy voltari_gateway/
+
+      - name: bandit (SAST)
+        id: bandit
+        # Replaces GH Code-Scanning CodeQL — open-source SAST для Python,
+        # бесплатно работает на private repo + self-hosted. Gate ловит
+        # MEDIUM+ severity при MEDIUM+ confidence (HIGH-confidence-only
+        # = пропускает реальные уязвимости из-за разовых false-negatives;
+        # LOW severity = шум, не gate'им).  -ll = severity ≥ MEDIUM,
+        # -ii = confidence ≥ MEDIUM.
+        if: always()
+        continue-on-error: true
+        # -c pyproject.toml — подгружает [tool.bandit] skips
+        # (B101/B104/B105/B110 — задокументированные false-positives).
+        # NB: working-directory = apps/gateway → путь относительный.
+        run: bandit -c pyproject.toml -r voltari_gateway/ -ll -ii
+
+      - name: lint quality-gate (fail if any of ruff/mypy/bandit failed)
+        if: always()
+        run: |
+          set -euo pipefail
+          fail=0
+          for step in \
+            "ruff_check=${{ steps.ruff_check.outcome }}" \
+            "ruff_format=${{ steps.ruff_format.outcome }}" \
+            "mypy=${{ steps.mypy.outcome }}" \
+            "bandit=${{ steps.bandit.outcome }}"; do
+            name="${step%%=*}"
+            outcome="${step#*=}"
+            if [ "$outcome" != "success" ]; then
+              echo "::error::$name → $outcome"
+              fail=1
+            else
+              echo "$name → success"
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::gateway-lint failed — see step outcomes above."
+            exit 1
+          fi
+
+  gateway-test:
+    name: gateway · pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gateway"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway_test
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+      SECRET_KEY: ci-test-secret-not-for-prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/gateway/pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: pytest
+        # Skip the dedicated testcontainers integration suite — the
+        # ``postgres-integration`` job below covers it. Service-container
+        # Postgres is already wired into DATABASE_URL for the unit tests.
+        # Quality gate (TD-039): Sprint 3 Поток H raised the threshold
+        # back to 80% (from the temporary 75% Sprint 2 used). Fixed two
+        # things this sprint:
+        #   1. Added ~150 new tests (TD-008 Decimal, TD-009 expires_at,
+        #      reset_password, usage boundaries, circuit_breaker fail-open,
+        #      receipts NPD, autorefill loop, openai_provider, etc.).
+        #   2. Coverage config now uses ``concurrency = thread+greenlet``
+        #      so async lines after await boundaries are traced correctly
+        #      (was a silent false-negative under coverage 7.x with
+        #      pytest-asyncio).
+        # Next bumps: 85% Sprint 4, 95% Sprint 5 (Linear quality bar).
+        env:
+          SKIP_POSTGRES_TESTS: "1"
+        run: pytest --maxfail=1 --disable-warnings -q --cov=. --cov-report=xml --cov-fail-under=80 --ignore=tests/integration
+
+      - name: Upload coverage
+        # Upload — это convenience-артефакт для просмотра в UI, НЕ quality gate.
+        # `continue-on-error: true` — на бесплатном плане GH Actions storage quota
+        # быстро забивается, и ronning artifact upload не должен блокировать
+        # merge зелёного PR. Quality gate уже проверен в шаге `pytest` через
+        # `--cov-fail-under`. retention-days снижен с 7 до 3 для экономии.
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-coverage
+          path: apps/gateway/coverage.xml
+          retention-days: 3
+
+  # -------- Gateway · Postgres integration (testcontainers) --------
+  # Spins up postgres:16-alpine via testcontainers-python. Validates the
+  # ``ON CONFLICT DO NOTHING`` semantics of the welcome-credit flow under
+  # real concurrency — something SQLite cannot reproduce.
+  gateway-postgres-integration:
+    name: gateway · pg integration (testcontainers)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/gateway/pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Pre-pull postgres image (warm Docker cache)
+        run: docker pull postgres:16-alpine
+
+      - name: pytest (integration only)
+        run: pytest tests/integration -v --disable-warnings
+
+  # -------- Gateway · PII golden-corpus benchmark (regression gate) --------
+  # Sprint 13 / Privacy v2 — Phase 5. Re-runs the recogniser against the
+  # 50-doc hand-annotated corpus and fails the build if recall drops by
+  # more than 0.5pp on any category vs. tests/pii_corpus/baseline.json.
+  # See apps/gateway/tests/pii_corpus/README.md for the rationale and
+  # the procedure for re-snapshotting the baseline.
+  gateway-pii-benchmark:
+    name: gateway · pii benchmark (recall regression)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/gateway/pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Step 1: corpus integrity (offsets + checksums) — fails fast if a
+      # corpus edit broke the contract before we even load Natasha.
+      - name: Validate corpus integrity
+        run: python tests/pii_corpus/validate_corpus.py
+
+      # Step 2: run recogniser, dump JSON to benchmark_results/.
+      - name: Run benchmark
+        run: python tests/pii_corpus/benchmark.py
+
+      # Step 3: compare today's snapshot against frozen baseline.json.
+      # `find` resolves the dated filename without a Bash date-vs-Python-UTC
+      # mismatch (the benchmark uses Python's UTC; runner's `date` may differ).
+      - name: Check recall regression vs. baseline
+        run: |
+          set -euo pipefail
+          current=$(ls -1 tests/pii_corpus/benchmark_results/*.json | sort | tail -1)
+          echo "Comparing $current against baseline.json"
+          python tests/pii_corpus/check_regression.py \
+            --baseline tests/pii_corpus/baseline.json \
+            --current "$current" \
+            --max-recall-drop 0.005
+
+      # Persist the snapshot so a failed run can be inspected post-mortem.
+      - name: Upload benchmark snapshot
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: pii-benchmark-snapshot
+          path: apps/gateway/tests/pii_corpus/benchmark_results/*.json
+          retention-days: 14
+
+  # -------- Web (Next.js / TypeScript) --------
+  web-lint:
+    name: web · lint (eslint + tsc)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      # All-or-nothing (см. комментарий в gateway-lint).
+      - name: eslint
+        id: web_eslint
+        if: always()
+        continue-on-error: true
+        run: npm run lint
+
+      - name: tsc --noEmit
+        id: web_typecheck
+        if: always()
+        continue-on-error: true
+        run: npm run typecheck
+
+      - name: web-lint quality-gate (fail if eslint or tsc failed)
+        if: always()
+        run: |
+          set -euo pipefail
+          fail=0
+          for step in \
+            "eslint=${{ steps.web_eslint.outcome }}" \
+            "typecheck=${{ steps.web_typecheck.outcome }}"; do
+            name="${step%%=*}"
+            outcome="${step#*=}"
+            if [ "$outcome" != "success" ]; then
+              echo "::error::$name → $outcome"
+              fail=1
+            else
+              echo "$name → success"
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::web-lint failed — see step outcomes above."
+            exit 1
+          fi
+
+  web-test:
+    name: web · vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npm run test -- --run --reporter=default
+
+  # -------- E2E smoke (каждый PR — блокирующий) --------
+  # Запускается на каждом PR/push. Покрывает «воронку нового клиента»:
+  # signup → verify → login → создать ключ → API call. Цель — ловить
+  # регрессии класса 2026-05-02 (8 багов UI-воронки, которых не ловят unit-тесты).
+  # Бежит только smoke-spec'и (01/02/03) под MSW — no docker, no real gateway.
+  # Тайминг: build ≈ 2 мин + тесты ≈ 2 мин = под 5 мин total.
+  e2e-smoke:
+    name: web · e2e smoke (signup funnel)
+    runs-on: ubuntu-latest
+    needs: [web-lint]
+    # 2026-05-13: bumped 8→15. Cold-VM прогон: checkout 1m + npm ci 1m +
+    # playwright install 1m + build 2m + start 0.5m + smoke tests 3-4m
+    # = ~9 мин на чистом ubuntu-latest. Запас на flakes/Chromium downloads.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: Install Playwright browsers
+        # Только chromium — sufficient для smoke. Firefox/WebKit увеличивают
+        # install на ~3 мин, регрессии воронки одинаковы во всех браузерах.
+        run: npx playwright install --with-deps chromium
+
+      # MSW worker'у нужен service-worker bundle в public/. msw:init копирует
+      # mockServiceWorker.js — без этого page.goto не подхватит моки.
+      - name: Init MSW service worker
+        run: npm run msw:init
+
+      # 2026-05-13: переключили webServer dev→prod. На GitHub-hosted ubuntu-latest
+      # без .next-кэша `next dev` cold compile (15+ страниц с MDX/typedRoutes)
+      # стабильно превышал 300s playwright timeout. Build (~1-2 мин, вне
+      # playwright timeout) + standalone server (<5с) укладываются с запасом.
+      - name: Build Next.js app
+        run: npm run build
+
+      # next.config.mjs uses `output: 'standalone'` (для Docker multi-stage).
+      # Standalone-сервер требует .next/static и public/ скопированными
+      # внутрь .next/standalone/. Without this — 404 на ассетах + favicons.
+      - name: Copy standalone assets
+        run: |
+          cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
+
+      - name: Run smoke E2E
+        run: npm run test:e2e:smoke
+        env:
+          CI: 'true'
+
+      - name: Upload Playwright trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace-smoke
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+  # -------- E2E (только на main, дольше всех) --------
+  web-e2e:
+    name: web · Playwright e2e
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [gateway-test, web-test]
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Run Playwright
+        # `npm run dev` в playwright.config.ts стартует медленно (>60s timeout).
+        # Sprint 3 Поток I мигрирует на `npm run start` после build — быстрее.
+        # До тех пор — non-blocking, чтобы failing job не плодил email-spam.
+        # Quality-gate уже не зависит от этого step (см. needs:).
+        continue-on-error: true
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        # См. комментарий выше про artifact storage quota.
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 14
+
+  # -------- Security scan (Trivy) — TD-018 --------
+  # Сканируем gateway-image на CRITICAL/HIGH CVEs. Блокирует merge если
+  # в зависимости утекла новая critical уязвимость. HIGH — пока warning.
+  # Web-образ строится из node:22-alpine от Vercel team — отдельно сканировать
+  # имеет смысл когда web-Dockerfile начнёт меняться часто.
+  security-scan:
+    name: security · trivy (gateway)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gateway image (local, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/gateway
+          file: ./apps/gateway/Dockerfile
+          push: false
+          load: true
+          tags: voltari-gateway:trivy-scan
+          cache-from: type=gha,scope=gateway-trivy
+          cache-to: type=gha,mode=max,scope=gateway-trivy
+
+      # CRITICAL — блокируем merge (exit-code 1).
+      # HIGH — пишем в SARIF + summary, но не падаем (warning only).
+      # ignore-unfixed: пропускаем уязвимости без upstream-патча — мы их всё равно
+      #   не можем закрыть до выхода фикса в alpine/python.
+      - name: Trivy scan (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'voltari-gateway:trivy-scan'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: 'true'
+          format: 'table'
+          vuln-type: 'os,library'
+          scanners: 'vuln'
+
+      - name: Trivy scan (HIGH → SARIF artifact)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'voltari-gateway:trivy-scan'
+          severity: 'HIGH'
+          exit-code: '0'
+          ignore-unfixed: 'true'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          vuln-type: 'os,library'
+          scanners: 'vuln'
+
+      # SARIF в Security tab — только для push-event'ов (на PR права тех. ограничены
+      # на форках; для соло-репо нет форков, но оставляем guard на будущее).
+      - name: Upload SARIF to GitHub Security tab
+        if: always() && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-gateway'
+
+  # -------- Quality gate aggregator --------
+  # Один required-check для GitHub branch protection. Если любой из
+  # depends-on упал — этот тоже падает. Это позволяет в Settings → Branches
+  # требовать ровно один статус "ci · quality-gate" вместо пяти разных.
+  # См. docs/branch_protection_setup.md.
+  quality-gate:
+    name: ci · quality-gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - gateway-lint
+      - gateway-test
+      - gateway-postgres-integration
+      - gateway-pii-benchmark
+      - web-lint
+      - web-test
+      - e2e-smoke
+      - security-scan
+    steps:
+      - name: Verify all required jobs passed
+        run: |
+          set -euo pipefail
+          declare -A results
+          results["gateway-lint"]="${{ needs.gateway-lint.result }}"
+          results["gateway-test"]="${{ needs.gateway-test.result }}"
+          results["gateway-postgres-integration"]="${{ needs.gateway-postgres-integration.result }}"
+          results["gateway-pii-benchmark"]="${{ needs.gateway-pii-benchmark.result }}"
+          results["web-lint"]="${{ needs.web-lint.result }}"
+          results["web-test"]="${{ needs.web-test.result }}"
+          results["e2e-smoke"]="${{ needs.e2e-smoke.result }}"
+          results["security-scan"]="${{ needs.security-scan.result }}"
+
+          fail=0
+          for job in "${!results[@]}"; do
+            status="${results[$job]}"
+            if [ "$status" != "success" ]; then
+              echo "::error::$job → $status"
+              fail=1
+            else
+              echo "$job → success"
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Quality gate failed — see job-by-job statuses above."
+            exit 1
+          fi
+          echo "All required jobs passed. Quality gate green."

@@ -1,0 +1,1642 @@
+/* ============================================================
+ * Brikko Marketing Shell — стили для public pages (Sprint 13).
+ *
+ * Импортируется в globals.css. Все классы префикснуты `brikko-` чтобы
+ * не пересекаться с Tailwind / dashboard-стилями.
+ *
+ * Источник эстетики — apps/web/src/app/preview/cream/page.module.css.
+ * Здесь вынесены ТОЛЬКО shell-уровень (top-bar, hamburger overlay, footer,
+ * shared section/card-стили). Hero / Models / Pricing — на уровне
+ * страниц-компонентов рисуют свои секции через ту же палитру vars.
+ *
+ * CSS-vars (--bg-base, --fg-primary, --accent-1 etc) определены в globals.css
+ * для :root и [data-theme=dark]. Переключение темы работает на любой странице,
+ * где этот файл заагружен через globals.css.
+ * ============================================================ */
+
+.brikko-marketing {
+  background: var(--bg-base);
+  color: var(--fg-primary);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+  position: relative;
+  overflow-x: hidden;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-marketing ::selection {
+  background: var(--fg-primary);
+  color: var(--bg-base);
+}
+
+.brikko-marketing *:focus-visible {
+  outline: 2px solid var(--accent-1);
+  outline-offset: 3px;
+  border-radius: inherit;
+}
+
+/* Grain noise overlay */
+.brikko-noise {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.08 0 0 0 0 0.06 0 0 0 0.4 0'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
+}
+
+[data-theme='dark'] .brikko-noise {
+  opacity: 0.07;
+  mix-blend-mode: screen;
+}
+
+/* ============================================================
+ * TOP-BAR — fixed, inline, не glass-pill
+ * ============================================================ */
+.brikko-top-bar {
+  position: fixed;
+  top: 32px;
+  left: 32px;
+  right: 32px;
+  z-index: 100;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  pointer-events: none;
+}
+
+.brikko-brand {
+  pointer-events: auto;
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  text-decoration: none;
+  justify-self: start;
+  transition: color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-brand:hover {
+  color: var(--fg-muted);
+}
+
+.brikko-hamburger {
+  pointer-events: auto;
+  justify-self: center;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 9999px;
+  transition: background 200ms var(--ease-out-quint);
+}
+
+.brikko-hamburger:hover {
+  background: var(--bg-elevated);
+}
+
+.brikko-hamburger-line {
+  display: block;
+  width: 24px;
+  height: 1.5px;
+  background: var(--fg-primary);
+  border-radius: 2px;
+  transform-origin: 50% 50%;
+  transition:
+    transform 360ms var(--ease-out-quint),
+    opacity 240ms var(--ease-out-quint),
+    background 400ms var(--ease-in-out-quart);
+}
+
+.brikko-hamburger-open .brikko-hamburger-line:nth-child(1) {
+  transform: translateY(7.5px) rotate(45deg);
+}
+.brikko-hamburger-open .brikko-hamburger-line:nth-child(2) {
+  opacity: 0;
+  transform: scaleX(0);
+}
+.brikko-hamburger-open .brikko-hamburger-line:nth-child(3) {
+  transform: translateY(-7.5px) rotate(-45deg);
+}
+
+.brikko-top-right {
+  pointer-events: auto;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brikko-theme-toggle {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 9999px;
+  cursor: pointer;
+  color: var(--fg-primary);
+  padding: 0;
+  transition:
+    background 240ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-in-out-quart),
+    color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-theme-toggle:hover {
+  background: var(--bg-elevated);
+  border-color: var(--hairline-hi);
+}
+
+.brikko-theme-toggle:active {
+  transform: scale(0.95);
+}
+
+.brikko-top-login {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-primary);
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  padding: 6px 2px;
+  position: relative;
+  transition: color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-top-login::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 1px;
+  background: var(--fg-primary);
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 360ms var(--ease-out-quint);
+}
+
+.brikko-top-login:hover::after {
+  transform: scaleX(1);
+}
+
+@media (max-width: 640px) {
+  .brikko-top-bar {
+    top: 18px;
+    left: 18px;
+    right: 18px;
+  }
+  .brikko-brand {
+    font-size: 19px;
+  }
+  .brikko-top-right {
+    gap: 8px;
+  }
+}
+
+/* ============================================================
+ * Hamburger overlay
+ * ============================================================ */
+.brikko-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--bg-base);
+  backdrop-filter: blur(40px) saturate(140%);
+  -webkit-backdrop-filter: blur(40px) saturate(140%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 320ms var(--ease-out-quint),
+    background 400ms var(--ease-in-out-quart);
+}
+
+.brikko-menu-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bg-base);
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.brikko-menu-overlay > * {
+  position: relative;
+  z-index: 1;
+}
+
+.brikko-menu-overlay-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.brikko-menu-nav {
+  width: min(900px, 92vw);
+}
+
+.brikko-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.brikko-menu-item {
+  opacity: 0;
+  transform: translateY(20px) scale(0.98);
+  transition:
+    opacity 540ms var(--ease-out-quint),
+    transform 540ms var(--ease-out-quint);
+}
+
+.brikko-menu-overlay-open .brikko-menu-item {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.brikko-menu-link {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  padding: 6px 0;
+  color: var(--fg-primary);
+  text-decoration: none;
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(40px, 6vw, 56px);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  border-bottom: 1px solid var(--hairline);
+  transition: color 240ms var(--ease-out-quint);
+}
+
+.brikko-menu-link:hover {
+  color: var(--fg-muted);
+}
+
+.brikko-menu-link:hover .brikko-menu-label {
+  font-style: italic;
+}
+
+.brikko-menu-index {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  align-self: center;
+  font-weight: 500;
+}
+
+.brikko-menu-label {
+  transition: font-style 240ms var(--ease-out-quint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brikko-menu-item {
+    transition: opacity 200ms linear !important;
+    transform: none !important;
+  }
+}
+
+.brikko-main {
+  position: relative;
+  z-index: 2;
+}
+
+/* ============================================================
+ * SECTIONS — base section / hero / divider / shared structures
+ * ============================================================ */
+.brikko-section {
+  position: relative;
+  z-index: 2;
+  padding: 128px 0;
+}
+
+.brikko-section-narrow {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-left: 6vw;
+  padding-right: 6vw;
+}
+
+.brikko-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  color: var(--fg-muted);
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 32px;
+  transition:
+    border-color 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+
+.brikko-h1 {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(40px, 4.5vw, 72px);
+  line-height: 1.06;
+  letter-spacing: -0.022em;
+  color: var(--fg-primary);
+  margin: 0 0 28px;
+  max-width: 18ch;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-h2 {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(36px, 4vw, 56px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  margin: 0 0 20px;
+  max-width: 22ch;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-h2-italic {
+  font-style: italic;
+}
+
+.brikko-lede {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  max-width: 56ch;
+  margin: 0 0 40px;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-divider {
+  width: min(1400px, 88vw);
+  height: 1px;
+  margin: 0 auto;
+  background: var(--hairline);
+  transition: background 400ms var(--ease-in-out-quart);
+}
+
+/* ============================================================
+ * BUTTONS — primary pill (espresso) / secondary outlined / link
+ * ============================================================ */
+.brikko-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 9999px;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  cursor: pointer;
+  border: 0;
+  transition:
+    background 200ms var(--ease-in-out-quart),
+    color 240ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint),
+    transform 200ms var(--ease-out-quint);
+  font-family: inherit;
+}
+
+.brikko-btn-primary {
+  background: var(--accent-1);
+  color: var(--bg-base);
+  padding: 14px 14px 14px 22px;
+}
+
+.brikko-btn-primary:hover {
+  background: var(--accent-1-hover);
+}
+
+.brikko-btn-primary:active {
+  transform: scale(0.98);
+}
+
+.brikko-btn-secondary {
+  background: transparent;
+  color: var(--fg-primary);
+  border: 1px solid var(--hairline-hi);
+}
+
+.brikko-btn-secondary:hover {
+  border-color: var(--fg-primary);
+  background: var(--bg-elevated);
+}
+
+.brikko-btn-secondary:active {
+  transform: scale(0.98);
+}
+
+.brikko-btn-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme='dark'] .brikko-btn-icon-wrap {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ============================================================
+ * CARDS — double-bezel
+ * ============================================================ */
+.brikko-card-outer {
+  position: relative;
+  background: var(--bg-elevated);
+  border-radius: 32px;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  text-decoration: none;
+  color: inherit;
+  display: block;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint),
+    transform 400ms var(--ease-out-quint);
+}
+
+.brikko-card-outer:hover {
+  border-color: var(--hairline-hi);
+  transform: translateY(-4px);
+}
+
+.brikko-card-inner {
+  position: relative;
+  background: var(--bg-base);
+  border-radius: calc(32px - 6px);
+  padding: 28px;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    box-shadow 400ms var(--ease-in-out-quart);
+  height: 100%;
+}
+
+/* ============================================================
+ * FOOTER (light grayscale)
+ * ============================================================ */
+.brikko-footer {
+  position: relative;
+  z-index: 2;
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-base);
+  padding: 80px 6vw 56px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-footer-grid {
+  max-width: 1400px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 48px;
+}
+
+@media (max-width: 1023px) {
+  .brikko-footer-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .brikko-footer-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+}
+
+.brikko-footer-brand {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 500;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+}
+
+.brikko-footer-tagline {
+  margin-top: 12px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 36ch;
+}
+
+.brikko-footer-col-title {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin-bottom: 16px;
+}
+
+.brikko-footer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.brikko-footer-link {
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  transition: color 240ms var(--ease-out-quint);
+}
+
+.brikko-footer-link:hover {
+  color: var(--fg-primary);
+}
+
+.brikko-footer-payments {
+  /* Полоса «Способы оплаты» между основной grid и нижней строкой
+     copyright. Текст-only сейчас (см. комментарий в Footer.tsx);
+     когда добавим SVG-логотипы по брендбуку НСПК — заменим
+     align-items на center и поправим line-height. */
+  max-width: 1400px;
+  margin: 40px auto 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  transition: border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-footer-payments-label {
+  font-weight: 500;
+  color: var(--fg-primary);
+}
+
+.brikko-footer-payments-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--fg-muted);
+}
+
+.brikko-footer-payments-via {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.brikko-footer-bottom {
+  max-width: 1400px;
+  margin: 24px auto 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--fg-muted);
+  transition: border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-footer-domain {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+/* ============================================================
+ * CONTENT PRIMITIVES — для docs / cookbook / smart-routing /
+ * integrations / playground. Extends shell с шаблоном
+ * card-bezel + code-shell + pill + cta inline.
+ * ============================================================ */
+
+/* Inline link inside body copy (espresso в light, cream в dark) */
+.brikko-link {
+  color: var(--fg-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--hairline-hi);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  font-weight: 500;
+  transition:
+    color 240ms var(--ease-in-out-quart),
+    text-decoration-color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-link:hover {
+  text-decoration-color: var(--fg-primary);
+}
+
+/* Body prose used inside <p>: цвет fg-muted, читаемая высота строк */
+.brikko-prose {
+  color: var(--fg-muted);
+  font-size: 16px;
+  line-height: 1.65;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+/* Inline code chip */
+.brikko-code-inline {
+  display: inline;
+  padding: 2px 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.875em;
+  color: var(--fg-primary);
+  white-space: nowrap;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+/* Code shell — espresso bg в light theme, cream bg в dark (inverted) */
+.brikko-code-shell {
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 6px;
+  overflow: hidden;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-code-pre {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 12px;
+  padding: 18px 20px;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-code-pre code {
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.brikko-code-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--hairline);
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+}
+
+/* Pill — общий tag/badge: rounded full, hairline, fg-muted */
+.brikko-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart),
+    color 400ms var(--ease-in-out-quart);
+}
+
+/* Card-bezel — двойная рамка: outer wrap (bg-elevated, padding 4px) + inner
+ * (bg-base + hairline). Premium look из /preview/cream. Используется как
+ * wrapper:
+ *   <div class="brikko-card-bezel">
+ *     <div class="brikko-card-bezel-inner"> ... content ... </div>
+ *   </div>
+ * Для упрощения single-section — есть .brikko-card-flat: одинарная рамка
+ * без double bezel (для compact-карточек в листингах). */
+.brikko-card-bezel {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  padding: 5px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint);
+}
+
+.brikko-card-bezel-inner {
+  background: var(--bg-base);
+  border-radius: 16px;
+  padding: 24px;
+  height: 100%;
+  transition: background 400ms var(--ease-in-out-quart);
+}
+
+/* Compact flat card — одинарная рамка hairline на bg-base, для списков */
+.brikko-card-flat {
+  background: var(--bg-base);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 20px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint);
+}
+
+/* Card link — interactive hover на card-bezel */
+.brikko-card-link {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  padding: 28px;
+  text-decoration: none;
+  color: inherit;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint),
+    transform 400ms var(--ease-out-quint);
+}
+
+.brikko-card-link:hover {
+  border-color: var(--hairline-hi);
+  background: var(--bg-base);
+  transform: translateY(-2px);
+}
+
+/* CTA-pill — primary (espresso bg, cream fg) и secondary (outlined) */
+.brikko-cta-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px 12px 22px;
+  background: var(--accent-1);
+  color: var(--bg-base);
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  transition:
+    background 200ms var(--ease-in-out-quart),
+    transform 200ms var(--ease-out-quint);
+  font-family: inherit;
+}
+
+.brikko-cta-primary:hover {
+  background: var(--accent-1-hover);
+}
+
+.brikko-cta-primary:active {
+  transform: scale(0.98);
+}
+
+.brikko-cta-primary:disabled,
+.brikko-cta-primary[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.brikko-cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  background: transparent;
+  color: var(--fg-primary);
+  border: 1px solid var(--hairline-hi);
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 240ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint),
+    transform 200ms var(--ease-out-quint);
+  font-family: inherit;
+}
+
+.brikko-cta-secondary:hover {
+  background: var(--bg-elevated);
+  border-color: var(--fg-primary);
+}
+
+.brikko-cta-secondary:active {
+  transform: scale(0.98);
+}
+
+/* CTA-card — нижний банер «Получить ключ» в конце страниц */
+.brikko-cta-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+/* Form inputs — для playground select/textarea */
+.brikko-input,
+.brikko-textarea,
+.brikko-select {
+  display: block;
+  width: 100%;
+  background: var(--bg-base);
+  border: 1px solid var(--hairline-hi);
+  border-radius: 12px;
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  transition:
+    border-color 240ms var(--ease-in-out-quart),
+    background 400ms var(--ease-in-out-quart);
+}
+
+.brikko-input {
+  padding: 10px 14px;
+  height: 42px;
+}
+
+.brikko-textarea {
+  padding: 12px 14px;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.brikko-select {
+  padding: 10px 14px;
+  height: 42px;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 13px) 50%;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 40px;
+}
+
+.brikko-input::placeholder,
+.brikko-textarea::placeholder {
+  color: var(--fg-faint);
+}
+
+.brikko-input:focus,
+.brikko-textarea:focus,
+.brikko-select:focus {
+  border-color: var(--fg-primary);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-1-soft);
+}
+
+/* Quick-example chip — outlined pill, для playground */
+.brikko-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    background 240ms var(--ease-in-out-quart),
+    border-color 240ms var(--ease-out-quint),
+    color 240ms var(--ease-in-out-quart);
+  font-family: inherit;
+}
+
+.brikko-chip:hover {
+  background: var(--bg-base);
+  border-color: var(--hairline-hi);
+  color: var(--fg-primary);
+}
+
+/* Terminal — для response-area в playground (bg-tier-2 + Geist Mono) */
+.brikko-terminal {
+  background: var(--bg-tier-2);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 18px 20px;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+/* Reading prose for /legal — long-form readable text */
+.brikko-legal-prose h2 {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.012em;
+  color: var(--fg-primary);
+  margin-top: 32px;
+  margin-bottom: 8px;
+}
+
+.brikko-legal-prose p,
+.brikko-legal-prose li {
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.brikko-legal-prose a {
+  color: var(--fg-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--hairline-hi);
+  text-underline-offset: 3px;
+}
+
+.brikko-legal-prose a:hover {
+  text-decoration-color: var(--fg-primary);
+}
+
+/* ============================================================
+ * AUTH SHELL — login / signup / verify-email / reset-password
+ *
+ * Минималистичный wrapper: brand-mark слева, theme-toggle справа,
+ * центрированная form-card. НЕ TrafficCanvas, НЕ hamburger menu.
+ * Auth = focused task — снимаем всё, что отвлекает от submit'а.
+ * ============================================================ */
+.brikko-auth-bar {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 32px;
+}
+
+@media (max-width: 640px) {
+  .brikko-auth-bar {
+    padding: 18px 18px;
+  }
+}
+
+.brikko-auth-main {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px 64px;
+  gap: 20px;
+}
+
+.brikko-auth-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+/* Inner bezel — единый bg-base block внутри card. */
+.brikko-auth-inner {
+  background: var(--bg-base);
+  border-radius: 16px;
+  padding: 36px 32px 32px;
+  transition: background 400ms var(--ease-in-out-quart);
+}
+
+@media (max-width: 480px) {
+  .brikko-auth-inner {
+    padding: 28px 22px 26px;
+  }
+}
+
+.brikko-auth-title {
+  font-family: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(28px, 3.4vw, 36px);
+  line-height: 1.1;
+  letter-spacing: -0.018em;
+  color: var(--fg-primary);
+  margin: 0 0 8px;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-auth-subtitle {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  margin: 0 0 24px;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-auth-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.brikko-auth-footer-link {
+  font-size: 14px;
+  color: var(--fg-muted);
+  letter-spacing: -0.005em;
+  text-align: center;
+  transition: color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-auth-foot {
+  position: relative;
+  z-index: 2;
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-base);
+  padding: 20px 32px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--fg-faint);
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-auth-foot-link {
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition: color 240ms var(--ease-out-quint);
+}
+
+.brikko-auth-foot-link:hover {
+  color: var(--fg-primary);
+}
+
+.brikko-auth-foot-sep {
+  color: var(--fg-faint);
+  user-select: none;
+}
+
+.brikko-auth-foot-copy {
+  color: var(--fg-faint);
+}
+
+/* Field stack — gap между label / input / hint / error.
+ * .brikko-field-stack оборачивает <label>+<input>+<helper>+<error>. */
+.brikko-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brikko-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  letter-spacing: -0.005em;
+  transition: color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-field-helper {
+  font-size: 12px;
+  color: var(--fg-faint);
+  line-height: 1.5;
+  transition: color 240ms var(--ease-in-out-quart);
+}
+
+.brikko-field-error {
+  font-size: 12px;
+  font-weight: 500;
+  color: #dc2626;
+  line-height: 1.5;
+  min-height: 16px;
+}
+
+[data-theme='dark'] .brikko-field-error {
+  color: #f87171;
+}
+
+/* invalid-вариант input'а — красная рамка вместо стандартной */
+.brikko-input[aria-invalid='true'],
+.brikko-textarea[aria-invalid='true'],
+.brikko-select[aria-invalid='true'] {
+  border-color: #dc2626;
+}
+
+[data-theme='dark'] .brikko-input[aria-invalid='true'],
+[data-theme='dark'] .brikko-textarea[aria-invalid='true'],
+[data-theme='dark'] .brikko-select[aria-invalid='true'] {
+  border-color: #f87171;
+}
+
+.brikko-input[aria-invalid='true']:focus,
+.brikko-textarea[aria-invalid='true']:focus,
+.brikko-select[aria-invalid='true']:focus {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+/* Checkbox — кастомизация под grayscale tokens */
+.brikko-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline-hi);
+  background: var(--bg-base);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 2px;
+  position: relative;
+  transition:
+    background 200ms var(--ease-in-out-quart),
+    border-color 200ms var(--ease-in-out-quart);
+}
+
+.brikko-checkbox:hover {
+  border-color: var(--fg-primary);
+}
+
+.brikko-checkbox:checked {
+  background: var(--accent-1);
+  border-color: var(--accent-1);
+}
+
+.brikko-checkbox:checked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bg-base);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5l3 3 7-7'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5l3 3 7-7'/></svg>");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.brikko-checkbox:focus-visible {
+  outline: 2px solid var(--accent-1);
+  outline-offset: 2px;
+}
+
+/* Reason banner: контекстное сообщение над формой (session_required,
+ * password_reset_success, и т.п.) — хайралайн-pill с лёгким accent-фоном. */
+.brikko-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  transition:
+    background 400ms var(--ease-in-out-quart),
+    border-color 400ms var(--ease-in-out-quart);
+}
+
+.brikko-banner-info {
+  background: var(--bg-elevated);
+}
+
+.brikko-banner-success {
+  background: var(--accent-2-soft);
+  border-color: var(--hairline-hi);
+}
+
+.brikko-banner-error {
+  border-color: rgba(220, 38, 38, 0.3);
+}
+
+[data-theme='dark'] .brikko-banner-error {
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.brikko-banner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-primary);
+  margin: 0 0 2px;
+  letter-spacing: -0.005em;
+}
+
+.brikko-banner-desc {
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.brikko-banner-error .brikko-banner-title {
+  color: #dc2626;
+}
+
+[data-theme='dark'] .brikko-banner-error .brikko-banner-title {
+  color: #f87171;
+}
+
+/* ============================================================
+ * Reduced motion
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .brikko-marketing,
+  .brikko-btn,
+  .brikko-btn-primary,
+  .brikko-btn-secondary,
+  .brikko-theme-toggle,
+  .brikko-card-outer,
+  .brikko-card-inner,
+  .brikko-card-bezel,
+  .brikko-card-link,
+  .brikko-cta-primary,
+  .brikko-cta-secondary,
+  .brikko-cta-card,
+  .brikko-pill,
+  .brikko-code-inline,
+  .brikko-code-shell,
+  .brikko-code-pre,
+  .brikko-input,
+  .brikko-textarea,
+  .brikko-select,
+  .brikko-chip,
+  .brikko-terminal,
+  .brikko-link,
+  .brikko-prose {
+    transition: none !important;
+  }
+  .brikko-hamburger-line {
+    transition: transform 200ms linear, opacity 200ms linear !important;
+  }
+}
+
+/* ============================================================
+ * DOCS — sidebar + main двухколоночный layout (Sprint 14, 2026-05-06)
+ *
+ * Использование: <DocsLayout> оборачивает все /docs/* страницы.
+ * Sidebar sticky на desktop ≥1024px, collapsible <details> на mobile.
+ * ============================================================ */
+
+.brikko-docs-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+@media (min-width: 1024px) {
+  .brikko-docs-shell {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 48px;
+    padding: 48px 32px 96px;
+  }
+}
+
+/* Mobile TOC <details> */
+.brikko-docs-mobile-toc {
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  .brikko-docs-mobile-toc {
+    display: none;
+  }
+}
+
+.brikko-docs-mobile-toc-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-primary);
+  list-style: none;
+}
+
+.brikko-docs-mobile-toc-summary::-webkit-details-marker {
+  display: none;
+}
+
+.brikko-docs-mobile-toc-icon {
+  font-family: var(--font-mono), 'Geist Mono', ui-monospace, monospace;
+  font-size: 18px;
+  color: var(--fg-muted);
+  transition: transform 200ms var(--ease-in-out-quart);
+}
+
+.brikko-docs-mobile-toc[open] .brikko-docs-mobile-toc-icon {
+  transform: rotate(45deg);
+}
+
+.brikko-docs-mobile-toc-body {
+  padding: 8px 18px 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Desktop sidebar wrap */
+.brikko-docs-sidebar-wrap {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .brikko-docs-sidebar-wrap {
+    display: block;
+    flex: 0 0 240px;
+    position: sticky;
+    top: 96px; /* offset под fixed top-bar */
+    max-height: calc(100vh - 112px);
+    overflow-y: auto;
+  }
+}
+
+.brikko-docs-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.brikko-docs-sidebar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brikko-docs-sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 0 0 4px;
+  padding: 0 12px;
+}
+
+.brikko-docs-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.brikko-docs-sidebar-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition:
+    background 160ms var(--ease-in-out-quart),
+    color 160ms var(--ease-in-out-quart);
+}
+
+.brikko-docs-sidebar-link:hover {
+  background: var(--bg-elevated);
+  color: var(--fg-primary);
+}
+
+.brikko-docs-sidebar-link--active {
+  background: var(--bg-elevated);
+  color: var(--fg-primary);
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 var(--accent-1);
+}
+
+.brikko-docs-sidebar-tag {
+  font-family: var(--font-mono), 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+  flex-shrink: 0;
+}
+
+/* Main content area */
+.brikko-docs-main {
+  flex: 1;
+  min-width: 0; /* prevent flex-overflow от длинных <pre> */
+}
+
+/* Code-block — header + copy button */
+.brikko-docs-codeblock {
+  display: flex;
+  flex-direction: column;
+}
+
+.brikko-docs-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.brikko-docs-codeblock-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.brikko-docs-codeblock-copy {
+  font-family: var(--font-mono), 'Geist Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease-in-out-quart),
+    color 160ms var(--ease-in-out-quart),
+    border-color 160ms var(--ease-in-out-quart);
+}
+
+.brikko-docs-codeblock-copy:hover {
+  background: var(--bg-elevated);
+  color: var(--fg-primary);
+  border-color: var(--fg-faint);
+}
+
+.brikko-docs-codeblock-copy:focus-visible {
+  outline: 2px solid var(--accent-1);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+ * SAVINGS CALCULATOR — /pricing (Brikko vs Wise, Sprint 14, 2026-05-09)
+ *
+ * Двухколоночная сетка: входы (sticky-узкая) + сравнительная таблица.
+ * На <880px — стек вертикально для мобильного использования.
+ * ============================================================ */
+.brikko-calculator-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 880px) {
+  .brikko-calculator-grid {
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  }
+}
+
+/* Custom range slider — grayscale thumb на тонком hairline-track. */
+.brikko-calc-slider {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--hairline-hi);
+  outline: none;
+  cursor: pointer;
+  margin: 4px 0;
+}
+
+.brikko-calc-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-1);
+  border: 3px solid var(--bg-base);
+  box-shadow: 0 0 0 1px var(--hairline-hi);
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.brikko-calc-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.brikko-calc-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-1);
+  border: 3px solid var(--bg-base);
+  box-shadow: 0 0 0 1px var(--hairline-hi);
+  cursor: pointer;
+}
+
+.brikko-calc-slider:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-1-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brikko-calc-slider::-webkit-slider-thumb {
+    transition: none;
+  }
+}

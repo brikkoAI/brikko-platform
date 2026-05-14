@@ -1,0 +1,377 @@
+# Brikko alerting rules — для Grafana Cloud Alerting (Loki + Prometheus).
+#
+# Этот файл — source of truth для всех alert'ов. Применяется через Grafana
+# Cloud UI (Alerting → Alert rules → Import) или через `gcloud-tf` (когда
+# перейдём на Terraform-managed alerts; пока — manual import).
+#
+# === Канал доставки (MVP, соло-CEO) ===
+# Все алерты идут в Telegram-канал CEO через единый contact point
+# "tg-ceo-critical" (Grafana Cloud → Contact points → Telegram):
+#   - bot:      @BrikkoAI_bot  (TELEGRAM_BOT_TOKEN в /opt/brikko/.env)
+#   - chat_id:  -100<XXXX>     (приватный канал "Brikko Ops", только CEO)
+#   - severity: critical → notify always (24/7)
+#                warning  → notify only 08:00–22:00 МСК (mute window в notification policy)
+#                info     → daily digest 09:00 МСК
+#
+# === 5 P0-алертов для запуска MVP (контракт с CEO) ===
+#   1. VoltariApiDown          — gateway /healthz down > 2 min
+#   2. ProviderDown_<NAME>     — конкретный LLM-провайдер недоступен > 5 min (× 6 правил)
+#   3. VoltariHigh5xxRate      — 5xx на /v1/chat/completions > 5% за 10 min
+#   4. YookassaWebhookFails    — webhooks от ЮKassa падают (после её подключения)
+#   5. VoltariDiskSpaceLow     — свободное место на диске < 20% (на любом из 2 серверов)
+#
+# Runbook'и: каждый alert в `description:` ссылается на конкретный § RUNBOOK.md.
+#
+# ВАЖНО: thresholds ниже — для MVP-нагрузки (≤100 RPS, ≤100 active users).
+# По мере роста — пересматривать раз в спринт.
+
+groups:
+  # ============================================================
+  # P0 — CRITICAL (24/7, founder waking up)
+  # ============================================================
+  - name: voltari_critical
+    interval: 1m
+    rules:
+      # ---- (P0/1) Gateway healthcheck падает > 2 min ----
+      # Источник: blackbox-exporter (или UptimeRobot) → probe_success метрика.
+      # Endpoint: https://api.brikko.ru/healthz должен возвращать 200.
+      - alert: VoltariApiDown
+        expr: |
+          probe_success{job="blackbox",instance="https://api.brikko.ru/healthz"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          channel: telegram
+          contact_point: tg-ceo-critical
+        annotations:
+          summary: "[P0] Brikko gateway /healthz down > 2 минут"
+          runbook: "RUNBOOK.md §7.1 (full DR), §7.4 (DB)"
+          description: |
+            Gateway не отвечает 200 на /healthz через CF.
+            ACTION:
+              1. ssh -i ~/.ssh/brikko_regru root@80.78.253.225
+              2. cd /opt/brikko && docker compose -f docker-compose.prod.yml ps
+              3. Если gateway не "healthy" → docker compose logs gateway --tail 100
+              4. Restart: docker compose -f docker-compose.prod.yml restart gateway
+              5. Если postgres/redis в crashloop — RUNBOOK §7.4
+              6. Если сервер недоступен — Reg.ru панель → KVM-консоль
+
+      # ---- Postgres down (через /readyz который возвращает 503) ----
+      - alert: VoltariPostgresDown
+        expr: |
+          probe_http_status_code{instance="https://api.brikko.ru/readyz"} == 503
+        for: 2m
+        labels:
+          severity: critical
+          channel: telegram
+        annotations:
+          summary: "Voltari Postgres unreachable from gateway"
+          description: |
+            /readyz returns 503 = DB or Redis down.
+            Action: `docker compose ps postgres redis` → если crashloop
+            см. RUNBOOK §7.4. RPO до 24h (последний daily backup).
+
+      # ---- (P0/3) 5xx > 5% на /v1/chat/completions за 10 минут ----
+      # Контракт MVP: 5xx → пользователь видит ошибку → отток + churn.
+      # Окно 10 мин, не 5 — чтобы не алертить на одиночные всплески от провайдера.
+      # Минимум 20 RPM в знаменателе — иначе делим на маленькое число и шумим.
+      - alert: VoltariHigh5xxRate
+        expr: |
+          (
+            sum(rate(voltari_requests_total{path="/v1/chat/completions",status=~"5.."}[10m]))
+            /
+            ignoring(status) sum(rate(voltari_requests_total{path="/v1/chat/completions"}[10m]))
+          ) > 0.05
+          and
+          sum(rate(voltari_requests_total{path="/v1/chat/completions"}[10m])) > 0.33
+        for: 10m
+        labels:
+          severity: critical
+          channel: telegram
+          contact_point: tg-ceo-critical
+        annotations:
+          summary: "[P0] 5xx > 5% на /v1/chat/completions за 10 минут"
+          runbook: "RUNBOOK.md §7.6 (provider failover)"
+          description: |
+            Gateway отдаёт 5xx больше чем 5% запросов за 10 минут.
+            Это означает либо баг в коде, либо все провайдеры в дауне одновременно.
+            ACTION:
+              1. Sentry Issues → top exception в gateway-сервисе
+              2. Если ошибка от одного провайдера — выставить FORCE_ROUTE
+                 в /opt/brikko/.env на резервный (см. RUNBOOK §7.6)
+              3. Если все провайдеры — проверить WG-туннель к Aeza:
+                 ssh root@80.78.253.225 'wg show wg0 | grep handshake'
+              4. docker compose restart gateway если нужно
+
+      # ---- Balance corruption: отрицательный баланс ----
+      # Считается через scheduled query из postgres_exporter
+      # (или ad-hoc через ежечасный cron-скрипт, см. ниже).
+      - alert: VoltariNegativeBalance
+        expr: voltari_negative_balance_count > 0
+        for: 5m
+        labels:
+          severity: critical
+          channel: telegram
+        annotations:
+          summary: "Найдены аккаунты с balance_kopecks < 0 (data corruption)"
+          description: |
+            СТОП: signal of double-spend / hold not released / accounting bug.
+            Action: SQL → `SELECT account_id, balance_kopecks FROM accounts
+            WHERE balance_kopecks < 0;` → manual investigation.
+
+      # ---- (P0/2) Любой LLM-провайдер недоступен > 5 минут подряд ----
+      # Источник: gateway сам пишет метрику voltari_provider_up{provider="..."}
+      # = 1 если последний health-probe прошёл, 0 если нет. Probe — раз в 30 сек.
+      # 6 провайдеров → один alert с label group_by, но Telegram пришлёт 1 message
+      # per провайдер (Grafana auto-groups by labels).
+      #
+      # Smart-router сам failover'ит, поэтому этот алерт = WARNING для бизнеса
+      # (юзеры не страдают), но severity:critical т.к. влияет на маржу
+      # (резерв обычно дороже primary) и сигнал что у провайдера проблемы.
+      - alert: ProviderDown
+        expr: voltari_provider_up == 0
+        for: 5m
+        labels:
+          severity: critical
+          channel: telegram
+          contact_point: tg-ceo-critical
+        annotations:
+          summary: "[P0] LLM-провайдер {{ $labels.provider }} недоступен > 5 мин"
+          runbook: "RUNBOOK.md §7.6 (provider failover)"
+          description: |
+            Провайдер {{ $labels.provider }} не отвечает на health-probe больше 5 минут.
+            Smart-router автоматически failover'ит, юзеры не страдают.
+            НО: мы платим за резерв (обычно дороже).
+            ACTION:
+              1. Открыть status-page провайдера:
+                  - openai     → https://status.openai.com
+                  - anthropic  → https://status.anthropic.com
+                  - google     → https://status.cloud.google.com
+                  - deepseek   → https://status.deepseek.com
+                  - yandex     → https://status.yandex.cloud
+                  - sber       → (нет публичной status-page; чат поддержки)
+              2. Если incident на стороне провайдера → ждать
+              3. Если только у нас (curl с сервера тоже не работает) →
+                  - проверить WG-туннель: wg show wg0
+                  - проверить ключи в .env (не отозваны?)
+                  - Sentry → искать "provider=<name>" exceptions
+              4. Если затянулось >1 час — внести в incident-log
+
+      # ---- (P0/4) ЮKassa webhook failures ----
+      # Срабатывает после подключения ЮKassa (когда YOOKASSA_SHOP_ID в .env).
+      # Метрика: gateway инкрементит voltari_yookassa_webhook_total{result=...}:
+      #   - result="ok"           → подпись OK, успешно обработано
+      #   - result="bad_signature" → подпись не сошлась (атака или мисконфиг)
+      #   - result="error"         → 500 при обработке (баг)
+      # Алерт: >0 fails за 5 мин подряд (любые non-ok).
+      - alert: YookassaWebhookFails
+        expr: |
+          increase(voltari_yookassa_webhook_total{result!="ok"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          channel: telegram
+          contact_point: tg-ceo-critical
+        annotations:
+          summary: "[P0] ЮKassa webhook failures: {{ $value }} за 5 мин ({{ $labels.result }})"
+          runbook: "RUNBOOK.md §7.7 (billing webhook)"
+          description: |
+            Webhook от ЮKassa приходит, но gateway не может обработать.
+            result={{ $labels.result }} — типы:
+              - bad_signature: подпись не сходится. Проверить YOOKASSA_WEBHOOK_SECRET
+                в /opt/brikko/.env совпадает с тем что в ЮKassa личном кабинете.
+              - error:         500-я ошибка в обработчике. Sentry → traceback.
+            ПОСЛЕДСТВИЯ: пользователь заплатил, но баланс не пополнился — нужен
+            ручной credit + извинение в support.
+            ACTION:
+              1. Sentry → найти exception в endpoint /v1/billing/yookassa/webhook
+              2. ЮKassa ЛК → Уведомления → проверить URL и Secret
+              3. Если bad_signature массово — проверить формат заголовка
+                 X-Yookassa-Signature (должен быть HMAC-SHA256 hex)
+              4. Ручной credit пострадавшим:
+                  psql ... -c "UPDATE accounts SET balance_kopecks = balance_kopecks + <amount>
+                                WHERE id=<account_id>"
+              5. Замолчать алерт через 30 мин если уже исправлено
+                 (Grafana → Silence)
+
+      # ---- (P0/5) Disk space < 20% на любом из 2 серверов ----
+      # 20% (не 10%) — чтобы успеть среагировать ДО того как PG/Caddy запишут
+      # что-то в полный диск. Алерт на оба сервера: Reg.ru-prod + Aeza-proxy.
+      # node-exporter на обоих, host label = brikko-regru-prod | brikko-aeza-proxy
+      - alert: VoltariDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}
+           / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.20
+        for: 10m
+        labels:
+          severity: critical
+          channel: telegram
+          contact_point: tg-ceo-critical
+        annotations:
+          summary: "[P0] Disk free < 20% на {{ $labels.instance }}"
+          runbook: "RUNBOOK.md §7.5 (disk cleanup)"
+          description: |
+            Свободное место на корне < 20% на сервере {{ $labels.instance }}.
+            ACTION (Reg.ru — prod):
+              1. ssh -i ~/.ssh/brikko_regru root@80.78.253.225
+              2. df -h → найти что съело
+              3. docker system prune -a -f --volumes  (~2-5 GB)
+              4. Удалить старые backups: ls -lt /var/backups/ pg/
+              5. journalctl --vacuum-time=7d  (~500 MB)
+              6. Если всё ещё <20% — апгрейд VPS до тарифа выше
+            ACTION (Aeza — proxy):
+              1. ssh -i ~/.ssh/brikko_aeza root@185.125.101.83
+              2. То же самое.
+
+  # ============================================================
+  # P1 — WARNING (Telegram в рабочее время, 08:00..22:00 МСК)
+  # ============================================================
+  - name: voltari_warning
+    interval: 5m
+    rules:
+      # ---- 4xx error rate > 20% за 10 мин (вероятная brute-force / sweeping) ----
+      - alert: VoltariHigh4xxRate
+        expr: |
+          (
+            sum(rate(voltari_requests_total{status=~"4.."}[10m]))
+            /
+            sum(rate(voltari_requests_total[10m]))
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          channel: telegram
+        annotations:
+          summary: "4xx rate > 20% за 10 минут (возможный brute-force)"
+          description: |
+            Action: проверить Caddy access.log — top IP'ы по запросам.
+            Если паттерн на /v1/auth/login — RUNBOOK §7.3 (CF rules).
+
+      # ---- p95 latency > 5s за 10 мин ----
+      - alert: VoltariHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(voltari_request_latency_seconds_bucket[10m])) by (le)) > 5
+        for: 10m
+        labels:
+          severity: warning
+          channel: telegram
+        annotations:
+          summary: "p95 latency > 5s — провайдеры тормозят?"
+          description: |
+            Не путать со streaming-эндпоинтом (он long-poll).
+            Action: проверить provider response time через Sentry Performance.
+
+      # ---- Circuit breaker открыт > 5 минут ----
+      - alert: VoltariCircuitBreakerOpen
+        expr: voltari_circuit_breaker_state == 1
+        for: 5m
+        labels:
+          severity: warning
+          channel: telegram
+        annotations:
+          summary: "Circuit breaker открыт для {{ $labels.provider }}"
+          description: |
+            Провайдер {{ $labels.provider }} в open-state >5 мин.
+            Smart-router автоматически переключился на резерв, юзеры
+            не страдают, но мы платим за вызовы более дорогому провайдеру.
+            Action: проверить status-page провайдера, RUNBOOK §7.6 если затянулось.
+
+      # ---- Backup pipeline не отработал > 26 часов ----
+      - alert: VoltariBackupStale
+        expr: time() - voltari_backup_last_success_timestamp > 93600  # 26h
+        for: 30m
+        labels:
+          severity: warning
+          channel: telegram
+        annotations:
+          summary: "Daily PG backup не запускался >26 часов"
+          description: |
+            Action: ssh → `tail /var/log/voltari-backup.log` →
+            ручной запуск `infra/scripts/backup-pg.sh`.
+
+      # ---- Auth failure spike (brute-force на /v1/auth/login) ----
+      - alert: VoltariAuthFailureSpike
+        expr: rate(voltari_auth_failures_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          channel: telegram
+        annotations:
+          summary: "Auth failures > 10/sec за 5 мин"
+          description: |
+            Возможный brute-force. RUNBOOK §7.3.
+
+  # ============================================================
+  # P2 — INFO (digest раз в день в 09:00 МСК)
+  # ============================================================
+  - name: voltari_info
+    interval: 1h
+    rules:
+      # ---- New signups daily ----
+      # Эти rules не triggers — они feed в Grafana dashboard "Voltari Daily Digest"
+      # который рендерит отчёт раз в сутки и отправляет в TG. См. monitoring.md.
+      - record: voltari:signups_24h
+        expr: increase(voltari_signups_total[24h])
+      - record: voltari:revenue_kopecks_24h
+        expr: increase(voltari_revenue_kopecks_total[24h])
+      - record: voltari:requests_24h
+        expr: increase(voltari_requests_total[24h])
+
+# =============================================================================
+# HOWTO — установка алертов в Grafana Cloud (manual import, MVP)
+# =============================================================================
+#
+# 1) Создать Telegram-канал и бота:
+#    - В Telegram: создать приватный канал "Brikko Ops" (только CEO).
+#    - Добавить туда @BrikkoAI_bot админом с правом постинга.
+#    - Узнать chat_id канала: написать что-то в канал, открыть
+#       https://api.telegram.org/bot<TOKEN>/getUpdates → найти
+#       channel_post.chat.id (формат -100XXXXXXXXXX).
+#    - Положить в /opt/brikko/.env:
+#        TG_BOT_TOKEN=<тот же что TELEGRAM_BOT_TOKEN>
+#        TG_CHAT_ID=-100XXXXXXXXXX
+#    - Smoke: curl -sS -X POST \
+#         "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" \
+#         -d "chat_id=$TG_CHAT_ID&text=test alert"
+#
+# 2) В Grafana Cloud → Alerting → Contact points → New:
+#    Name: tg-ceo-critical
+#    Type: Telegram
+#    BOT API token: <TG_BOT_TOKEN>
+#    Chat ID:        <TG_CHAT_ID>
+#    Send "Test" — должно прийти сообщение.
+#
+# 3) Notification policies:
+#    - Default route → tg-ceo-critical
+#    - Matcher: severity=warning → mute_timing="night-22-08-msk"
+#    - Group by: [alertname, provider, instance]
+#    - Group wait: 30s, group interval: 5m, repeat interval: 4h
+#
+# 4) Импорт правил:
+#    Grafana Cloud → Alerting → Alert rules → Import → File upload →
+#    выбрать этот alerts.yml. Datasource: prometheus (Grafana Cloud Prom).
+#
+# 5) Smoke тест: остановить gateway на сервере на 3 минуты:
+#       docker compose -f docker-compose.prod.yml stop gateway
+#    Через ~2-3 мин в Telegram должно прийти "[P0] Brikko gateway /healthz down".
+#    Запустить обратно: docker compose -f docker-compose.prod.yml start gateway.
+#
+# =============================================================================
+# Метрики которые должен экспортировать gateway (контракт с dev-агентом)
+# =============================================================================
+# Если каких-то метрик ещё нет в коде — алерт не сработает.
+# Чек-лист (в порядке необходимости для 5 P0-алертов):
+#
+#   [✓] probe_success              — даёт blackbox-exporter / UptimeRobot, не gateway
+#   [✓] node_filesystem_avail_bytes — node-exporter, ставится на оба сервера
+#   [ ] voltari_provider_up{provider="openai|anthropic|google|deepseek|yandex|sber"}
+#       — gateway раз в 30 сек делает health-probe к каждому провайдеру и пишет 1/0
+#   [ ] voltari_requests_total{path,status,method} — Prometheus counter в gateway
+#   [ ] voltari_yookassa_webhook_total{result="ok|bad_signature|error"} — counter
+#   [ ] voltari_negative_balance_count — gauge, обновляется ежечасным cron-job
+#   [ ] voltari_circuit_breaker_state{provider} — 0=closed 1=open 2=half-open
+#   [ ] voltari_backup_last_success_timestamp — gauge, ставит backup-pg.sh после успеха
+#   [ ] voltari_auth_failures_total — counter в auth-эндпоинте
+#
+# TODO для dev-агента: добавить недостающие counters/gauges в apps/gateway/metrics.py.
+# Без них алерты будут показывать "no data" в Grafana.

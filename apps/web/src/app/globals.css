@@ -1,0 +1,378 @@
+@import './brikko-marketing.css';
+@import './brikko-dashboard.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ========================================================================
+     * Brikko Cream Studio v6 — strict grayscale tokens (Sprint 13, 2026-05-02).
+     * Источник истины — apps/web/src/app/preview/cream/page.module.css.
+     * Применяются ко всему marketing-стеку. dashboard/auth не используют.
+     * ====================================================================== */
+    --bg-base: #ffffff;
+    --bg-elevated: #f5f5f4;
+    --bg-tier-2: #e7e5e4;
+    --fg-primary: #1c1917;
+    /* Cream Studio v6: контрастный цвет текста на --accent (brand-600) кнопках.
+       light: brand-600 = espresso, текст белый. dark: brand-600 = cream, текст espresso. */
+    --on-accent: #ffffff;
+    --fg-muted: #57534e;
+    --fg-faint: #a8a29e;
+    --accent-1: #1c1917;
+    --accent-1-hover: #000000;
+    --accent-1-soft: rgba(28, 25, 23, 0.06);
+    --accent-2: #57534e;
+    --accent-2-soft: rgba(87, 83, 78, 0.10);
+    --hairline: rgba(28, 25, 23, 0.08);
+    --hairline-hi: rgba(28, 25, 23, 0.16);
+    --code-bg: #1c1917;
+    --code-fg: #f5f5f4;
+    --code-accent: #a8a29e;
+    --ease-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out-quart: cubic-bezier(0.32, 0.72, 0, 1);
+
+    /* Brand — Sprint 13.6 (Cream Studio v6 dashboard rebrand 2026-05-02).
+     * Раньше — indigo. Теперь — grayscale-espresso ramp, который alias'ит
+     * на ту же палитру, что marketing (--bg-elevated / --fg-primary / etc).
+     * Это даёт «бесплатный» rebrand 64+ usage'ам Tailwind-классов
+     * `bg-brand-*` / `text-brand-*` / `border-brand-*` / `ring-brand-*`
+     * без переписывания каждого файла.
+     *
+     * Правило ramp'а: 50/100 → tinted bg, 200/300 → hairline-level borders,
+     * 600/700/800/900 → espresso accent (active CTA / link / icon-primary).
+     * Все триплеты RGB (для `rgb(var(--brand-X) / <alpha-value>)`). */
+    /* Font-stack aliases (Sprint 13.7, 2026-05-05).
+     * Geist пакет отдает шрифты через `--font-geist-sans` / `--font-geist-mono`.
+     * Tailwind config / brikko-marketing.css ссылаются на `--font-sans` /
+     * `--font-mono` / `--font-display` — alias'им их к Geist'у через :root,
+     * чтобы не переписывать каждый CSS-файл и tailwind config.
+     * Inter и JetBrains Mono в banned-list бренда (visual-direction).
+     */
+    --font-sans: var(--font-geist-sans), -apple-system, system-ui, 'Segoe UI', sans-serif;
+    --font-mono: var(--font-geist-mono), 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --font-display: var(--font-serif), 'Source Serif 4', 'PP Editorial New', Georgia, serif;
+
+    --brand-50: 245 245 244;   /* stone-100 ≈ bg-elevated в light */
+    --brand-100: 231 229 228;  /* stone-200 */
+    --brand-200: 214 211 209;  /* stone-300 */
+    --brand-300: 168 162 158;  /* stone-400 ≈ fg-faint */
+    --brand-400: 120 113 108;  /* stone-500 */
+    --brand-500: 87 83 78;     /* stone-600 ≈ fg-muted */
+    --brand-600: 28 25 23;     /* stone-900 ≈ fg-primary / accent-1 */
+    --brand-700: 28 25 23;     /* same — нет «темнее accent-1» в light */
+    --brand-800: 0 0 0;
+    --brand-900: 0 0 0;
+
+    /* Semantic */
+    --success-50: 236 253 245;
+    --success-200: 167 243 208;
+    --success-600: 5 150 105;
+
+    --warning-50: 255 251 235;
+    --warning-200: 253 230 138;
+    /* Banner-* токены: bg + текст должны быть контрастны в обеих темах.
+       Inверсию даём через :root[data-theme='dark'] ниже — иначе светлый
+       fg-50 теряется на cream фоне и наоборот. */
+    --banner-warning-bg: 255 251 235;
+    --banner-warning-border: 253 230 138;
+    --banner-warning-fg: 28 25 23;
+    --banner-warning-fg-muted: 87 83 78;
+    --warning-600: 217 119 6;
+
+    --error-50: 254 242 242;
+    --error-200: 254 202 202;
+    --error-600: 220 38 38;
+    --banner-error-bg: 254 242 242;
+    --banner-error-border: 254 202 202;
+    --banner-error-fg: 127 29 29;
+    --banner-error-fg-muted: 153 27 27;
+
+    --info-50: 240 249 255;
+    --info-600: 2 132 199;
+    --banner-info-bg: 240 249 255;
+    --banner-info-border: 186 230 253;
+    --banner-info-fg: 12 74 110;
+    --banner-info-fg-muted: 7 89 133;
+
+    --banner-success-bg: 240 253 244;
+    --banner-success-border: 187 247 208;
+    --banner-success-fg: 20 83 45;
+    --banner-success-fg-muted: 22 101 52;
+  }
+
+  :root[data-theme='dark'] {
+    --bg-base: #1c1917;
+    --bg-elevated: #292524;
+    --bg-tier-2: #44403c;
+    --fg-primary: #f5f5f4;
+    --fg-muted: #d6d3d1;
+    --on-accent: #1c1917;
+    /* Banner-* в dark: тёмный фон семантического тона + светлый fg.
+       Без этих переопределений плашки рендерятся как «cream-on-cream»
+       внутри dark-shell и текст теряется (см. Privacy-upsell на
+       /app/settings/privacy от 2026-05-08). */
+    --banner-warning-bg: 69 26 3;
+    --banner-warning-border: 146 64 14;
+    --banner-warning-fg: 254 243 199;
+    --banner-warning-fg-muted: 252 211 77;
+    --banner-info-bg: 23 37 84;
+    --banner-info-border: 30 58 138;
+    --banner-info-fg: 219 234 254;
+    --banner-info-fg-muted: 191 219 254;
+    --banner-success-bg: 6 78 59;
+    --banner-success-border: 6 95 70;
+    --banner-success-fg: 209 250 229;
+    --banner-success-fg-muted: 167 243 208;
+    --banner-error-bg: 69 10 10;
+    --banner-error-border: 127 29 29;
+    --banner-error-fg: 254 226 226;
+    --banner-error-fg-muted: 254 202 202;
+    --fg-faint: #78716c;
+    --accent-1: #f5f5f4;
+    --accent-1-hover: #ffffff;
+    --accent-1-soft: rgba(245, 245, 244, 0.08);
+    --accent-2: #a8a29e;
+    --accent-2-soft: rgba(168, 162, 158, 0.12);
+    --hairline: rgba(245, 245, 244, 0.08);
+    --hairline-hi: rgba(245, 245, 244, 0.16);
+    --code-bg: #ffffff;
+    --code-fg: #1c1917;
+    --code-accent: #57534e;
+
+    /* Brand — invert ramp в dark: 50 → near bg, 600 → cream (fg-primary).
+     * Bg-* классы (bg-brand-50/100) выглядят как чуть тёмнее, чем стандартный
+     * card; text-brand-700 → cream, как fg-primary. */
+    --brand-50: 41 37 36;      /* ≈ bg-elevated dark */
+    --brand-100: 68 64 60;     /* stone-700 */
+    --brand-200: 87 83 78;     /* stone-600 */
+    --brand-300: 120 113 108;  /* stone-500 ≈ fg-faint dark */
+    --brand-400: 168 162 158;  /* stone-400 */
+    --brand-500: 214 211 209;  /* stone-300 ≈ fg-muted dark */
+    --brand-600: 245 245 244;  /* stone-100 ≈ fg-primary / accent-1 dark */
+    --brand-700: 245 245 244;
+    --brand-800: 255 255 255;
+    --brand-900: 255 255 255;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-white font-sans text-body text-gray-700 antialiased;
+  }
+
+  /* Marketing / auth / dashboard — все pages, у которых root оборачивает
+   * .brikko-marketing, наследуют Cream Studio v6 vars. Sprint 13.6
+   * (2026-05-02): добавили dashboard-shell в этот же опт-ин — теперь
+   * /app/* тоже cream. */
+  body:has(.brikko-marketing) {
+    background: var(--bg-base);
+    color: var(--fg-primary);
+    transition:
+      background 400ms var(--ease-in-out-quart),
+      color 400ms var(--ease-in-out-quart);
+  }
+
+  /* Tabular figures для всего, где есть цифры в столбик
+     (09_design_system §2.5) */
+  [data-numeric],
+  table tbody td,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Focus ring (09_design_system §10.3) */
+  *:focus-visible {
+    outline: 2px solid rgb(var(--brand-600));
+    outline-offset: 2px;
+    border-radius: inherit;
+  }
+  *:focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Reduced motion (09_design_system §9.4) */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
+ * Recipe / Doc article typography (Sprint 11).
+ *
+ * Tailwind plugin @tailwindcss/typography сюда не подтягивали — он добавил бы
+ * 30+ КБ CSS под тонкое маркдаун-форматирование, которое нам нужно ровно на
+ * двух страницах (cookbook recipe + smart-routing). Самописный набор классов
+ * под `.recipe-prose` покрывает именно те тэги, которые рождает marked из
+ * наших .md: h2/h3, p, ul/ol, code/pre, blockquote, table, hr, a.
+ * ---------------------------------------------------------------------- */
+/* Cream Studio v6 — recipe-prose использует CSS-vars (--bg-elevated /
+ * --code-bg / --hairline). dark-theme inverts code-блоки автоматом. */
+.recipe-prose {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--fg-muted);
+  max-width: 65ch;
+}
+.recipe-prose > * + * {
+  margin-top: 20px;
+}
+.recipe-prose h2 {
+  margin-top: 48px;
+  font-family: var(--font-serif), 'Source Serif 4', Georgia, serif;
+  font-weight: 500;
+  font-size: 26px;
+  letter-spacing: -0.012em;
+  color: var(--fg-primary);
+  scroll-margin-top: 5rem;
+}
+.recipe-prose h3 {
+  margin-top: 32px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+.recipe-prose h2 + p,
+.recipe-prose h3 + p {
+  margin-top: 12px;
+}
+.recipe-prose p {
+  line-height: 1.65;
+}
+.recipe-prose strong {
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+.recipe-prose a {
+  color: var(--fg-primary);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--hairline-hi);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 240ms;
+}
+.recipe-prose a:hover {
+  text-decoration-color: var(--fg-primary);
+}
+.recipe-prose ul,
+.recipe-prose ol {
+  margin-top: 16px;
+  padding-left: 24px;
+}
+.recipe-prose ul > li,
+.recipe-prose ol > li {
+  margin-top: 8px;
+}
+.recipe-prose ul {
+  list-style: disc;
+}
+.recipe-prose ul li::marker {
+  color: var(--fg-faint);
+}
+.recipe-prose ol {
+  list-style: decimal;
+}
+.recipe-prose ol li::marker {
+  color: var(--fg-muted);
+}
+.recipe-prose li > p {
+  margin: 0;
+}
+.recipe-prose code {
+  display: inline;
+  padding: 2px 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.875em;
+  color: var(--fg-primary);
+}
+.recipe-prose pre {
+  margin-top: 16px;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+.recipe-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: inherit;
+}
+.recipe-prose blockquote {
+  border-left: 3px solid var(--fg-primary);
+  background: var(--bg-elevated);
+  padding: 12px 18px;
+  font-style: italic;
+  color: var(--fg-muted);
+  border-radius: 0 12px 12px 0;
+}
+.recipe-prose blockquote > p {
+  margin: 0;
+}
+.recipe-prose hr {
+  margin: 40px 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+}
+.recipe-prose table {
+  margin-top: 16px;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.recipe-prose th,
+.recipe-prose td {
+  border-bottom: 1px solid var(--hairline);
+  padding: 10px 14px;
+  text-align: left;
+}
+.recipe-prose th {
+  background: var(--bg-elevated);
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+.recipe-prose td {
+  vertical-align: top;
+  color: var(--fg-muted);
+}
+
+/* ----------------------------------------------------------------------
+ * Empty-state welcome (Sprint 12.5+ activation play).
+ *
+ * Staggered appear-only animation на /app для нового юзера. Используется в
+ * <EmptyDashboardWelcome> через inline `animationDelay`. Уважает
+ * prefers-reduced-motion (см. base правило выше).
+ * ---------------------------------------------------------------------- */
+@keyframes welcome-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.welcome-fade-in {
+  animation: welcome-fade-in 600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}

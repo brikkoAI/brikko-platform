@@ -1,0 +1,71 @@
+[project]
+name = "brikko-bridge"
+version = "0.1.0"
+description = "Self-hosted Telegram → Claude Code bridge with audit, pre-flight, and CLI-vs-bridge mutex"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Brikko", email = "support@brikko.ru" },
+]
+keywords = ["telegram", "claude", "claude-code", "ai", "bot", "bridge", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "aiogram>=3.13",
+    "aiosqlite>=0.20",
+    "structlog>=24.4",
+    # Process inspector — daemon scans claude.exe processes for /status
+    # display and CLI-vs-bridge mutex.
+    "psutil>=6.0",
+    # Phase 8 — can_use_tool callback (replaces --dangerously-skip-permissions).
+    # 0.1.80 is the first release where the callback fires reliably end-to-end;
+    # see DAY8_CALLBACK_PROTOTYPE_RESULTS.md for the regression history.
+    "claude-agent-sdk>=0.1.80,<0.2",
+    # Redis pub/sub for daemon ↔ bot approval round-trip (over SSH tunnel).
+    "redis>=5.0,<6",
+    # ULID for approval request_id — sortable, URL-safe, no PII like UUIDs leak.
+    "python-ulid>=2.0,<4",
+]
+
+[project.urls]
+Homepage = "https://github.com/brikkoAI/brikko-bridge"
+Documentation = "https://github.com/brikkoAI/brikko-bridge#readme"
+Repository = "https://github.com/brikkoAI/brikko-bridge"
+Issues = "https://github.com/brikkoAI/brikko-bridge/issues"
+"Related Project — Brikko Gateway" = "https://brikko.ru"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    # Fake Redis for approval-broker unit tests — avoids real Redis dependency
+    # in CI. Has full pub/sub + BLPOP/LPUSH support.
+    "fakeredis>=2.23",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["daemon*", "bot*", "shared*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

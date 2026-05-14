@@ -1,0 +1,220 @@
+{
+  "phase": "phase1_post_checksum_validation",
+  "generated_at": "2026-05-03T08:37:51.703769+00:00",
+  "total_docs": 10,
+  "true_positives": 11,
+  "false_positives": 1,
+  "false_negatives": 0,
+  "per_doc": [
+    {
+      "id": "doc_001_log_lines",
+      "text": "Request 1234567890 took 12345678901 ms, response 987654321012",
+      "detected": [
+        [
+          "PASSPORT",
+          "1234567890"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "PASSPORT",
+          "value": "1234567890"
+        }
+      ],
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "notes": "10-digit без сеп. ловится PASSPORT (existing behaviour). 11/12-digit КС fail после Phase 1 → не маскируются."
+    },
+    {
+      "id": "doc_002_real_inn_in_context",
+      "text": "Заключили договор с Сбербанком ИНН 7707083893 на сумму 50000 рублей",
+      "detected": [
+        [
+          "INN",
+          "7707083893"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "INN",
+          "value": "7707083893"
+        }
+      ],
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Сбербанк ИНН-10 — реальный КС-valid"
+    },
+    {
+      "id": "doc_003_invalid_inn_lookalike",
+      "text": "Номер запроса 1234567890 содержит 10 цифр но ИНН не является",
+      "detected": [
+        [
+          "PASSPORT",
+          "1234567890"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "PASSPORT",
+          "value": "1234567890"
+        }
+      ],
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Phase 1 устраняет INN-FP (КС fail). PASSPORT-фолбэк — existing pre-Phase-1 limit, fix будет в Phase 2 через контекст-aware дисамбигуацию."
+    },
+    {
+      "id": "doc_004_mixed_real_pii",
+      "text": "ИНН 7707083893, СНИЛС 112-233-445 95, паспорт 4509 123456, тел +7-999-123-45-67",
+      "detected": [
+        [
+          "PHONE",
+          "+7-999-123-45-67"
+        ],
+        [
+          "SNILS",
+          "112-233-445 95"
+        ],
+        [
+          "INN",
+          "7707083893"
+        ],
+        [
+          "PASSPORT",
+          "4509 123456"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "INN",
+          "value": "7707083893"
+        },
+        {
+          "type": "SNILS",
+          "value": "112-233-445 95"
+        },
+        {
+          "type": "PASSPORT",
+          "value": "4509 123456"
+        },
+        {
+          "type": "PHONE",
+          "value": "+7-999-123-45-67"
+        }
+      ],
+      "tp": 4,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Все 4 — реальные КС-valid (СНИЛС, INN) или формат-valid"
+    },
+    {
+      "id": "doc_005_card_with_luhn_fail",
+      "text": "Тестовая карта 1234567890123456 (это не валидная карта)",
+      "detected": [],
+      "expected": [],
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Luhn-валидатор устраняет 16-цифровой random"
+    },
+    {
+      "id": "doc_006_card_valid_luhn",
+      "text": "Карта Visa 4532015112830366 для тестов",
+      "detected": [
+        [
+          "CARD",
+          "4532015112830366"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "CARD",
+          "value": "4532015112830366"
+        }
+      ],
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Luhn-valid Visa"
+    },
+    {
+      "id": "doc_007_ogrn_valid",
+      "text": "ОГРН Сбербанка 1027700132195 — пример организации",
+      "detected": [
+        [
+          "OGRN",
+          "1027700132195"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "OGRN",
+          "value": "1027700132195"
+        }
+      ],
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Сбер ОГРН — КС-valid"
+    },
+    {
+      "id": "doc_008_ogrn_invalid",
+      "text": "Длинный код 1234567890123 не является ОГРН",
+      "detected": [],
+      "expected": [],
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Phase 1 KC устраняет 13-digit false-positive"
+    },
+    {
+      "id": "doc_009_email_phone_mix",
+      "text": "Контакт: ivanov@example.ru, +7 (495) 123-45-67",
+      "detected": [
+        [
+          "PHONE",
+          "+7 (495) 123-45-67"
+        ],
+        [
+          "EMAIL",
+          "ivanov@example.ru"
+        ]
+      ],
+      "expected": [
+        {
+          "type": "EMAIL",
+          "value": "ivanov@example.ru"
+        },
+        {
+          "type": "PHONE",
+          "value": "+7 (495) 123-45-67"
+        }
+      ],
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "notes": "Email + phone с круглыми скобками"
+    },
+    {
+      "id": "doc_010_payment_id_lookalike",
+      "text": "Платёж ID 12345678901234567890 успешно проведён",
+      "detected": [
+        [
+          "BANK_ACCOUNT",
+          "12345678901234567890"
+        ]
+      ],
+      "expected": [],
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "notes": "Phase 1 BANK_ACCOUNT без КС — known FP. Backlog v3: BIK-валидатор ЦБ РФ"
+    }
+  ],
+  "precision": 0.9167,
+  "recall": 1.0,
+  "f1": 0.9565
+}

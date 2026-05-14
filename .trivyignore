@@ -1,0 +1,61 @@
+# Trivy ignore list — Brikko
+#
+# Each entry must include rationale. CVEs здесь — те, что Trivy ловит
+# в supply chain и которые мы не можем закрыть прямой бамп-зависимости
+# (либо это false-positive в нашем threat model, либо upstream ещё не
+# выпустил fixed-версию).
+#
+# Формат: одна CVE на строку, без префиксов. Trivy игнорирует эти CVE
+# при scanning (и --ignore-unfixed, и явных severity-фильтрах).
+# Pruning: ревизия раз в квартал, удаляем закрытые/неактуальные.
+
+# ---- Go stdlib CVEs in bundled build tools (esbuild / @next/swc) ----
+# Эти CVE приходят из Go-скомпилированных бинарников внутри node_modules
+# (esbuild, возможно swc-биндинги). Бинарники запускаются только в
+# build-stage Docker, в runtime-образе их код не выполняется на untrusted
+# input — мы не парсим tar/zip/x509 из user request. Не exploitable в
+# нашем threat model. Закроем когда Next 14.x обновит swc/esbuild.
+CVE-2024-24790
+CVE-2024-34155
+CVE-2024-34156
+CVE-2025-47907
+CVE-2025-58183
+CVE-2025-61726
+CVE-2025-61728
+CVE-2025-61729
+CVE-2026-25679
+CVE-2026-32280
+CVE-2026-32281
+CVE-2026-32283
+CVE-2025-68121
+CVE-2023-45288
+# 2026-05-12: ещё пять Go-stdlib CVE из esbuild Go binary (v1.20.12).
+# Trivy DB обновилась, новые CVE для того же бинарника. Тот же rationale —
+# build-tool, не runtime user-input. Закроется когда esbuild bump'нёт Go.
+CVE-2026-33811
+CVE-2026-33814
+CVE-2026-39820
+CVE-2026-39836
+CVE-2026-42499
+
+# ---- picomatch ReDoS — extglob patterns не используются на user-input ----
+# В Brikko picomatch встречается только в build-tooling (next.js, postcss
+# globbing для Tailwind content-paths). Никакой user-input не идёт через
+# extglob — не exploitable.
+CVE-2026-33671
+
+# ---- Next.js 14.x — fixes ТОЛЬКО в Next 15+, не backported в 14 LTS ----
+# Bumpнуть на 14.2.35 (макс. на 14.x). Полноценный fix этих двух CVE
+# требует миграции на Next 15 — отдельный sprint (App Router breaking
+# changes, React 19 upgrade, eslint-config-next совместимость).
+# Митигейтинг: rate-limiting на Caddy перед /_next/* + Cloudflare на
+# auto-banhammer 429+.
+# TODO(2026-Q3): миграция на Next 15.
+GHSA-h25m-26qc-wcjf
+GHSA-q4gf-8mx6-v5v3
+# 2026-05-12: ещё три Next.js 14.x CVE (Middleware bypass, SSRF, DoS).
+# Также fixed только в Next 15.5.16+ — Next 14 LTS не backport.
+# Миграция Next 14→15 — отдельный sprint (App Router breaking + React 19).
+CVE-2026-44573
+CVE-2026-44578
+GHSA-8h8q-6873-q5fj

@@ -1,0 +1,60 @@
+# Local override для self-launch (dogfooding mode).
+# Использует локальную сборку образов вместо ghcr.io.
+#
+# Запуск:
+#   cd infra
+#   cp .env.example .env  # заполнить минимум: OPENAI_API_KEY, JWT_SECRET, POSTGRES_*
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Откат:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml down
+
+name: voltari
+
+services:
+  gateway:
+    # Локальная сборка из apps/gateway вместо image: ghcr.io/...
+    build:
+      context: ../apps/gateway
+      dockerfile: Dockerfile
+    image: voltari-gateway:local
+    # Для local-режима пробрасываем порт наружу для удобства curl-проверок
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* запекаются в bundle на build time, поэтому передаём их сюда,
+        # а не только в environment runtime. Без этого клиент уезжает в mock-режим.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/v1}
+        NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-http://localhost:3000}
+        NEXT_PUBLIC_BRAND_NAME: ${BRAND_NAME:-Brikko}
+        NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED: "false"
+    image: voltari-web:local
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # В local-режиме фронт ходит на gateway по host-сети через caddy.
+      # Если caddy не используешь — переключи на http://gateway:8000/v1
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/v1}
+      NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-http://localhost:3000}
+      NEXT_PUBLIC_BRAND_NAME: ${BRAND_NAME:-Brikko}
+      NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED: "false"
+
+  # Для local-режима пробрасываем postgres и redis наружу (удобно подключаться)
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  # Caddy в local-режиме НЕ нужен (используем прямые порты).
+  # Если хочешь auto-SSL для voltari.local — раскомментируй и пропиши hosts.
+  caddy:
+    profiles:
+      - never

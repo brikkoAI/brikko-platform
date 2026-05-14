@@ -1,0 +1,275 @@
+# /opt/brikko/docker-compose.prod.yml
+# Production docker-compose для Reg.ru VPS — сборка из исходников локально.
+# Используется в первом деплое (Sprint 8) до подключения CI/CD.
+#
+# Запуск:
+#   cd /opt/brikko
+#   docker compose -f docker-compose.prod.yml --env-file .env build
+#   docker compose -f docker-compose.prod.yml --env-file .env run --rm gateway alembic upgrade head
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# В отличие от docker-compose.yml (image-based, для CI/CD из GHCR), здесь:
+#   - gateway, web собираются ИЗ ИСХОДНИКОВ ./apps/{gateway,web}
+#   - postgres, redis, caddy — те же
+#   - tinyproxy/Hetzner — на отдельном Aeza VPS, gateway достаётся через
+#     OUTBOUND_HTTP_PROXY (WireGuard tunnel 10.10.0.1:8080)
+#
+# Volume-маппинг — на хост в /opt/brikko/data/* (явно, без named volumes), чтобы:
+#   - бэкап мог легко зацепить /opt/brikko/data/postgres
+#   - при пересоздании compose-stack данные не терялись
+#   - очевидно где данные лежат
+
+name: brikko
+
+networks:
+  frontend-net:
+    driver: bridge
+  backend-net:
+    driver: bridge
+
+services:
+  # -------- reverse proxy + auto-SSL --------
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: brikko-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+      - ./data/caddy/logs:/var/log/caddy
+    networks: [frontend-net]
+    depends_on:
+      - gateway
+      - web
+    # Healthcheck отключён намеренно (2026-05-13): BusyBox wget в caddy:2.8-alpine
+    # не умеет --max-redirect, а Caddy на :80 безусловно делает 301→https (HSTS),
+    # после чего wget ловит self-signed-mismatch и контейнер вечно "unhealthy".
+    # Реальную доступность снаружи мониторит UptimeRobot (https://brikko.ru/api/health
+    # и https://api.brikko.ru/v1/health), а `restart: unless-stopped` отлавливает
+    # crash изнутри. Подробности — infra/RUNBOOK.md.
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- API Gateway (FastAPI / Python 3.12 alpine) --------
+  gateway:
+    build:
+      context: ./apps/gateway
+      dockerfile: Dockerfile
+    # Prod: pull from GHCR via CI deploy script (sets GATEWAY_IMAGE_TAG in .env).
+    # If GHCR cache miss + image not local → falls back to build:.
+    image: ghcr.io/brikkoai/brikko-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    container_name: brikko-gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Двухсерверная архитектура — outbound через WireGuard к Aeza tinyproxy.
+      # DeepSeek работает БЕЗ proxy (CEO 2026-04-30): outbound_proxy=None hardcoded
+      # внутри роутера для DeepSeek-провайдера.
+      OUTBOUND_HTTP_PROXY: ${OUTBOUND_HTTP_PROXY:-}
+      PROXIED_PROVIDERS: ${PROXIED_PROVIDERS:-openai,anthropic,google}
+      # Phase 2 scraper wiring (2026-05-11) — empty values leave scrapers
+      # disabled, falling back to ManualAdapter for openai/anthropic/together.
+      SCRAPER_URL: ${SCRAPER_URL:-http://brikko-scraper:9100}
+      SCRAPER_INTERNAL_TOKEN: ${SCRAPER_INTERNAL_TOKEN:-}
+    expose:
+      - "8000"
+    networks:
+      - frontend-net
+      - backend-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request as u; u.urlopen('http://localhost:8000/healthz').read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # -------- Web (Next.js standalone) --------
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://api.brikko.ru/v1}
+        NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-https://brikko.ru}
+        NEXT_PUBLIC_BRAND_NAME: ${NEXT_PUBLIC_BRAND_NAME:-Brikko}
+        NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED: ${NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED:-false}
+    # Prod: pull from GHCR via CI deploy script (sets WEB_IMAGE_TAG in .env).
+    image: ghcr.io/brikkoai/brikko-web:${WEB_IMAGE_TAG:-latest}
+    container_name: brikko-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://api.brikko.ru/v1}
+      NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-https://brikko.ru}
+    expose:
+      - "3000"
+    networks: [frontend-net]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://localhost:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # -------- PostgreSQL 16 --------
+  postgres:
+    image: postgres:16-alpine
+    container_name: brikko-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=2GB
+      -c maintenance_work_mem=128MB
+      -c work_mem=16MB
+      -c max_connections=100
+      -c log_min_duration_statement=1000
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Balance scraper (Playwright, Phase 2 2026-05-11) --------
+  # Standalone service that runs headless chromium to scrape upstream LLM
+  # provider dashboards (OpenAI / Anthropic / Together) for balance figures.
+  # See apps/scraper/README.md.
+  #
+  # Network: backend-net only (no public exposure). Gateway reaches it via
+  # internal DNS http://brikko-scraper:9100. Cookies live on the named
+  # bind-mount ./data/encrypted-cookies, shared with the gateway so the
+  # /v1/account/admin/provider_cookies upload endpoint can write blobs
+  # that the scraper later reads.
+  scraper:
+    build:
+      context: ./apps/scraper
+      dockerfile: Dockerfile
+    image: brikko-scraper:local
+    container_name: brikko-scraper
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SCRAPER_INTERNAL_TOKEN: ${SCRAPER_INTERNAL_TOKEN:?must be set for Phase 2 scraper}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?must be set (same Fernet key as gateway)}
+      COOKIES_VOLUME_PATH: /encrypted-cookies
+      SCRAPER_PORT: "9100"
+      PLAYWRIGHT_HEADLESS: "true"
+      # OpenAI/Anthropic/Together блочат РФ-IP — ходим через Aeza outbound
+      # proxy (тот же что для gateway LLM-запросов).
+      OUTBOUND_HTTP_PROXY: ${OUTBOUND_HTTP_PROXY:-}
+    volumes:
+      - ./data/encrypted-cookies:/encrypted-cookies
+    expose:
+      - "9100"
+    # frontend-net нужен чтобы достучаться до Aeza tinyproxy (10.10.0.1:8080).
+    networks:
+      - backend-net
+      - frontend-net
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request as u; u.urlopen('http://localhost:9100/healthz').read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Redis 7 --------
+  redis:
+    image: redis:7-alpine
+    container_name: brikko-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ./data/redis:/data
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

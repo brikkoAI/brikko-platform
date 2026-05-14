@@ -1,0 +1,17 @@
+# Auto-provisioned Prometheus datasource.
+# Grafana при старте читает этот файл и создаёт data source без UI-кликов.
+# Default = да → все дашборды по умолчанию используют его.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 30s
+      httpMethod: POST

@@ -1,0 +1,33 @@
+# /etc/cron.d/voltari — Voltari production scheduled jobs.
+#
+# УСТАНОВКА:
+#   sudo cp /opt/voltari/infra/cron.d/voltari /etc/cron.d/voltari
+#   sudo chmod 644 /etc/cron.d/voltari
+#   sudo chown root:root /etc/cron.d/voltari
+#   sudo systemctl restart cron       # Ubuntu/Debian
+#
+# Проверка:
+#   sudo crontab -l -u deploy        # должен быть пустой
+#   sudo systemctl status cron       # должен быть active
+#   tail -f /var/log/voltari-backup.log
+#
+# NB: shell aliases / docker compose работают только если PATH правильный.
+# Поэтому prepend $PATH вручную.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# m h dom mon dow user  command
+
+# Ежедневный backup в 03:00 UTC (≈06:00 МСК) — низкий трафик.
+0 3 * * * deploy /opt/voltari/infra/scripts/backup-pg.sh >> /var/log/voltari-backup.log 2>&1
+
+# Еженедельный drill — понедельник 04:30 UTC. Запускается ПОСЛЕ daily backup'а
+# чтобы дернуть свежий снимок и убедиться что он восстановим.
+30 4 * * 1 deploy /opt/voltari/infra/scripts/test-backup-restore.sh >> /var/log/voltari-backup-drill.log 2>&1
+
+# Ежемесячная ротация Caddy логов — Caddy сам ротирует через roll_size в Caddyfile,
+# но здесь дополнительная защита от переполнения /var/log на edge-cases.
+# Старше 30 дней — сжать. Старше 90 — удалить.
+0 5 1 * * deploy find /opt/voltari/caddy_logs -name '*.log.gz' -mtime +90 -delete 2>/dev/null
+0 5 * * * deploy find /opt/voltari/caddy_logs -name '*.log' -mtime +30 -exec gzip {} \; 2>/dev/null

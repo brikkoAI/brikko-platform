@@ -1,0 +1,106 @@
+# Promtail config — Voltari production VPS.
+#
+# Назначение: собирает логи Docker JSON-driver всех контейнеров на VPS и
+# отправляет в Grafana Cloud Loki Free (50 GB ingest/мес).
+#
+# Аргументы (через docker-compose env):
+#   LOKI_TENANT_ID       — numeric ID из Grafana Cloud (раздел "Loki" → "Details")
+#   LOKI_API_KEY         — glc_... ключ с правами `logs:write`
+#   LOKI_URL             — https://logs-prod-xx.grafana.net/loki/api/v1/push
+#                          (правильный регион берётся из Cloud-консоли)
+#
+# Как получить Free Loki Cloud:
+#   1. https://grafana.com/auth/sign-up/create-user — создать аккаунт
+#   2. В консоли: Connections → Add new connection → Loki
+#   3. Создать stack (бесплатно один на аккаунт)
+#   4. В разделе "Send Logs" → выбрать Promtail → скопировать tenant_id, url, ключ
+#   5. Положить в infra/.env (или infra/.env.sops.yaml после внедрения SOPS)
+#
+# Стоимость:
+#   - 50 GB/mo Free
+#   - При среднем размере JSON-лога 500B и 30 RPS → ~3.6 GB/мес → запас на месяцы
+#   - Если перерастём Free — Pro $0.50/GB после 50 GB (платится за переполнение)
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  # Где Promtail хранит позицию чтения каждого лог-файла.
+  # На рестарте контейнера не теряем хвост — продолжаем с offset.
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: ${LOKI_URL}
+    tenant_id: ${LOKI_TENANT_ID}
+    basic_auth:
+      username: ${LOKI_TENANT_ID}
+      password: ${LOKI_API_KEY}
+    # Batch: balance между задержкой и сетевым оверхедом
+    batchwait: 5s
+    batchsize: 1048576    # 1 MB
+    # Backoff при недоступности Loki — теряем минимум логов
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+    # Если Loki молчит >5 мин — логи не теряем, продолжаем буферизовать на диске
+    timeout: 10s
+    # Drop'аем логи старше 1 часа (защита от багованных entries с epoch=0)
+    external_labels:
+      app: voltari
+      env: ${ENVIRONMENT:-production}
+      host: ${HOSTNAME:-vps}
+
+scrape_configs:
+  # ----- Docker discovery -----
+  # Promtail подписывается на Docker socket, автоматически находит все
+  # контейнеры и тянет их JSON-driver логи. Метки: container_name, image, project.
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        # Только наши контейнеры (имя начинается на voltari-).
+        # Остальные (если на VPS есть посторонние) — игнорим.
+        filters:
+          - name: name
+            values: ["voltari-*"]
+
+    relabel_configs:
+      # __meta_docker_container_name приходит как "/voltari-gateway" — обрезаем slash.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: project
+
+    pipeline_stages:
+      # Docker JSON-driver выдаёт {"log": "...", "stream": "stdout", "time": "..."}
+      # Достаём только текст лога, остальное в labels.
+      - docker: {}
+
+      # Парсим structlog-формат gateway-сервиса (он пишет JSON-логи в stdout).
+      # Если другой контейнер пишет plain-text — этап no-op, пропускаем.
+      - match:
+          selector: '{service="gateway"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  request_id: request_id
+                  account_id: account_id
+                  event: event
+            - labels:
+                level:
+                event:
+
+      # Защита от мусора: дропаем строки где timestamp вне разумного окна.
+      # (Иногда Docker daemon выдаёт epoch=0 на restart — отбраковываем.)
+      - drop:
+          older_than: 1h
+          drop_counter_reason: "stale_log"

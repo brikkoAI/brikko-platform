@@ -1,0 +1,245 @@
+name: Deploy Staging
+
+# Staging deploy — автоматически на каждый push в main.
+# Production deploy — только на git tag v*.*.* (см. deploy.yml).
+#
+# Логика:
+#   1. Build images с тегом staging-${SHA}
+#   2. Push в GHCR
+#   3. SOPS-decrypt staging secrets → scp на VPS как infra/.env.staging
+#   4. На VPS: docker compose -p voltari-staging ... up -d
+#   5. Smoke-test против https://staging.brikko.ru/healthz
+#   6. Telegram уведомление
+
+on:
+  # 2026-05-02: автоматический deploy на push отключён до настройки staging-инфры.
+  # Воркфлоу падал на каждый коммит из-за отсутствующих infra/.env.staging.sops.yaml
+  # и Telegram-secrets, генерируя ложно-красные badge. Включить обратно в `push:`
+  # секцию, когда staging-VPS будет готова и SOPS-ключ зальётся в repo secrets.
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  # Хардкод bbchort убран 2026-05-02 — репозиторий переехал в org brikkoAI,
+  # GHCR-namespace должен совпадать с github.repository_owner (lowercase).
+  # `vars.GHCR_NAMESPACE` опционален: если задан в repo settings, перекрывает.
+  GATEWAY_IMAGE: ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/voltari-gateway
+  WEB_IMAGE: ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/voltari-web
+
+# Один staging-deploy за раз (concurrency, but не cancel — даём текущему завершиться)
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  build-staging:
+    name: build & push staging-${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: gateway
+            context: ./apps/gateway
+            dockerfile: ./apps/gateway/Dockerfile
+          - service: web
+            context: ./apps/web
+            dockerfile: ./apps/web/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute staging tag
+        id: tag
+        run: |
+          # staging-<short-sha> — immutable, прослеживается обратно к коммиту
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "value=staging-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/voltari-${{ matrix.service }}:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/voltari-${{ matrix.service }}:staging-latest
+          cache-from: type=gha,scope=${{ matrix.service }}-staging
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-staging
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://staging.brikko.ru/api/v1
+            NEXT_PUBLIC_FRONTEND_URL=https://staging.brikko.ru
+            NEXT_PUBLIC_BRAND_NAME=Brikko (Staging)
+            NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED=false
+
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+
+  deploy-staging:
+    name: deploy to staging
+    needs: build-staging
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tag
+        id: tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "value=staging-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Install SOPS
+        run: |
+          SOPS_VERSION="v3.9.1"
+          curl -sSL "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+          chmod +x /tmp/sops
+          sudo mv /tmp/sops /usr/local/bin/sops
+
+      - name: Decrypt staging env
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/sops/age
+          umask 077
+          printf '%s\n' "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
+
+          if [ ! -f infra/.env.staging.sops.yaml ]; then
+            echo "::error::infra/.env.staging.sops.yaml not found. Create it first."
+            exit 1
+          fi
+
+          sops --decrypt --output-type dotenv infra/.env.staging.sops.yaml > /tmp/.env.staging
+          # Override IMAGE_TAG для staging
+          sed -i "s|^STAGING_IMAGE_TAG=.*|STAGING_IMAGE_TAG=${{ steps.tag.outputs.value }}|" /tmp/.env.staging
+          grep -q '^STAGING_IMAGE_TAG=' /tmp/.env.staging || \
+            echo "STAGING_IMAGE_TAG=${{ steps.tag.outputs.value }}" >> /tmp/.env.staging
+          chmod 600 /tmp/.env.staging
+
+      - name: Copy env + compose to VPS
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT || 22 }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H -p "$PROD_SSH_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Заливаем env + compose-файл
+          scp -i ~/.ssh/id_deploy -P "$PROD_SSH_PORT" \
+              /tmp/.env.staging \
+              "deploy@${PROD_HOST}:/opt/voltari/.env.staging.new"
+          scp -i ~/.ssh/id_deploy -P "$PROD_SSH_PORT" \
+              infra/docker-compose.staging.yml \
+              "deploy@${PROD_HOST}:/opt/voltari/infra/docker-compose.staging.yml"
+
+          ssh -i ~/.ssh/id_deploy -p "$PROD_SSH_PORT" "deploy@${PROD_HOST}" "
+            set -euo pipefail
+            cd /opt/voltari
+            chmod 600 .env.staging.new
+            mv .env.staging.new .env.staging
+          "
+
+      - name: Deploy staging
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd /opt/voltari
+
+            echo "Deploying staging tag ${{ steps.tag.outputs.value }}"
+
+            # Pull новые staging-образы
+            docker compose -p voltari-staging \
+              --env-file .env.staging \
+              -f infra/docker-compose.staging.yml \
+              pull
+
+            # Migrations на staging БД
+            docker compose -p voltari-staging \
+              --env-file .env.staging \
+              -f infra/docker-compose.staging.yml \
+              run --rm --no-deps gateway-staging alembic upgrade head
+
+            # Up
+            docker compose -p voltari-staging \
+              --env-file .env.staging \
+              -f infra/docker-compose.staging.yml \
+              up -d --remove-orphans
+
+            docker image prune -f
+
+      - name: Reload Caddy (pick up staging routes)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd /opt/voltari
+            # Caddy перечитывает Caddyfile если он изменился (симлинк или COPY).
+            # Мы не пушим Caddyfile в каждом deploy — это редкое изменение.
+            # Reload graceful — без потери connections.
+            docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile || \
+              docker compose restart caddy
+
+      - name: Smoke staging
+        run: |
+          echo "Waiting for staging to come up..."
+          sleep 25
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 10 https://staging.brikko.ru/api/v1/healthz; then
+              echo "Staging up"
+              break
+            fi
+            echo "Smoke attempt $i failed, retry in 10s..."
+            sleep 10
+            if [ "$i" = "5" ]; then
+              echo "::error::Staging healthcheck failed after 5 attempts"
+              exit 1
+            fi
+          done
+
+      - name: Cleanup secrets
+        if: always()
+        run: |
+          shred -u ~/.config/sops/age/keys.txt 2>/dev/null || rm -f ~/.config/sops/age/keys.txt
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+          shred -u /tmp/.env.staging 2>/dev/null || rm -f /tmp/.env.staging
+
+      - name: Notify Telegram
+        if: always()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TG_CHAT_ID }}
+          token: ${{ secrets.TG_BOT_TOKEN }}
+          format: markdown
+          message: |
+            *Staging deploy* `${{ steps.tag.outputs.value }}` → `${{ job.status }}`
+            commit: `${{ github.sha }}`
+            url: https://staging.brikko.ru

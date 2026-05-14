@@ -1,0 +1,54 @@
+# env / secrets
+.env
+.env.local
+.env.production
+*.pem
+*.key
+secrets/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite
+
+# node / next
+node_modules/
+.next/
+out/
+dist/
+build/
+.npm/
+.yarn/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# claude
+.claude/sessions/
+.claude/worktrees/
+.claude/settings.local.json
+
+# logs
+*.log
+logs/
+
+# alembic
+alembic.local.ini
+
+# test artifacts
+playwright-report/
+test-results/
+coverage/

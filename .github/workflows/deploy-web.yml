@@ -1,0 +1,288 @@
+name: Deploy Web (push-to-main)
+
+# Авто-деплой web (Next.js dashboard + landing) на production-VPS при push
+# в main с изменениями в apps/web/**. Заменяет ручной scripts/deploy-web.sh.
+#
+# Триггер: push в main с path-фильтром ИЛИ workflow_dispatch.
+# Параллельно с deploy-gateway.yml — независимые workflows, изолированные
+# concurrency-группы. Если в одном PR изменены и web и gateway, оба
+# триггерятся параллельно.
+#
+# Web не требует DB migration — просто docker pull + restart.
+# Healthcheck: GET https://brikko.ru/ → 200.
+# Rollback: при failed healthcheck возвращаем WEB_IMAGE_TAG на предыдущий.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to deploy (default: latest main)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-web-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ vars.GHCR_NAMESPACE || 'brikkoai' }}/brikko-web
+
+jobs:
+  # -------- Smoke unit-tests --------
+  # Полный CI прогнался на PR'е. Здесь — фаст-чек что vitest на main зелёный.
+  test:
+    name: web · smoke vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: vitest --run
+        run: npm run test -- --run --reporter=default
+
+  # -------- Build & push Docker image --------
+  build:
+    name: build & push
+    runs-on: ubuntu-latest
+    needs: test
+    # 2026-05-11: bump 20→40 — Trivy + npm install регулярно превышает
+    timeout-minutes: 40
+    outputs:
+      image_tag: ${{ steps.tag.outputs.value }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag (commit SHA)
+        id: tag
+        run: |
+          if [ -n "${{ inputs.sha }}" ]; then
+            SHA="${{ inputs.sha }}"
+          else
+            SHA="${GITHUB_SHA}"
+          fi
+          SHORT="${SHA:0:12}"
+          echo "value=sha-${SHORT}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # NEXT_PUBLIC_* запекаются в JS-bundle на build-time. Без них фронт
+      # стартует с ENV_BASE=undefined и переключается на MSW-моки. Передаём
+      # явные значения для production.
+      - name: Build & push web image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/web
+          file: ./apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha,scope=web-prod
+          cache-to: type=gha,mode=max,scope=web-prod
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://api.brikko.ru/v1
+            NEXT_PUBLIC_FRONTEND_URL=https://brikko.ru
+            NEXT_PUBLIC_BRAND_NAME=Brikko
+            NEXT_PUBLIC_AUTH_MIDDLEWARE_DISABLED=false
+
+      # Trivy CVE-scan свежего web-image — параллель с deploy-gateway.yml.
+      # See gateway notes для обоснования severity/ignore-unfixed.
+      - name: Trivy scan (HIGH/CRITICAL CVEs)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          vuln-type: 'os,library'
+          timeout: '8m'
+
+  # -------- Deploy to VPS --------
+  deploy:
+    name: deploy to production
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 12
+    environment:
+      name: production
+      url: https://brikko.ru/
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_brikko
+          chmod 600 ~/.ssh/id_brikko
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy web image
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          NEW_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<EOSSH
+          set -euo pipefail
+          cd /opt/brikko
+
+          # Backup previous tag для rollback'а
+          PREV_TAG=\$(grep -E '^WEB_IMAGE_TAG=' .env 2>/dev/null | cut -d= -f2 || echo "latest")
+          if [ -z "\$PREV_TAG" ]; then PREV_TAG="latest"; fi
+          echo "Previous web tag: \$PREV_TAG"
+          echo "WEB_IMAGE_TAG=\$PREV_TAG" > .deploy-web-prev-tag
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          NEW_IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}"
+          echo "Pulling \$NEW_IMAGE..."
+          docker pull "\$NEW_IMAGE"
+
+          # Обновить WEB_IMAGE_TAG в .env
+          if grep -q '^WEB_IMAGE_TAG=' .env 2>/dev/null; then
+            sed -i "s|^WEB_IMAGE_TAG=.*|WEB_IMAGE_TAG=${{ needs.build.outputs.image_tag }}|" .env
+          else
+            echo "WEB_IMAGE_TAG=${{ needs.build.outputs.image_tag }}" >> .env
+          fi
+
+          # Rolling restart web (без gateway/postgres/redis touch'а)
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --pull always web
+
+          # Cleanup
+          docker image prune -f --filter "until=72h" 2>&1 | tail -3 || true
+          EOSSH
+
+      # Healthcheck: главная brikko.ru должна отдать 200.
+      - name: Post-deploy healthcheck
+        id: health
+        run: |
+          set -euo pipefail
+          echo "Waiting 15s for web to come up..."
+          sleep 15
+          for i in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --max-time 10 "https://brikko.ru/" || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ brikko.ru responding HTTP 200"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $HTTP_CODE — retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::brikko.ru healthcheck failed (last code: $HTTP_CODE)"
+          exit 1
+
+      - name: Rollback on healthcheck failure
+        if: failure() && steps.health.conclusion == 'failure'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<'EOSSH'
+          set -euo pipefail
+          cd /opt/brikko
+          if [ ! -f .deploy-web-prev-tag ]; then
+            echo "::error::.deploy-web-prev-tag not found — manual rollback required"
+            exit 1
+          fi
+          PREV_TAG=$(grep -E '^WEB_IMAGE_TAG=' .deploy-web-prev-tag | cut -d= -f2)
+          echo "Rolling back web to $PREV_TAG"
+          sed -i "s|^WEB_IMAGE_TAG=.*|WEB_IMAGE_TAG=$PREV_TAG|" .env
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps web
+          echo "Rollback complete. Verify https://brikko.ru/ manually."
+          EOSSH
+
+      - name: Tail web logs (last 100 lines)
+        if: always()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" \
+              "docker logs --tail=100 brikko-web 2>&1" \
+              || echo "Failed to fetch logs"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_brikko 2>/dev/null || rm -f ~/.ssh/id_brikko
+
+      - name: Notify Telegram (optional)
+        if: always() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          STATUS: ${{ job.status }}
+          TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          MSG="Brikko web deploy ${TAG} → ${STATUS}%0Acommit: ${{ github.sha }}%0Aactor: @${{ github.actor }}%0Arun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "text=${MSG}" \
+            -d "parse_mode=HTML" \
+            > /dev/null || echo "Telegram notification failed (non-blocking)"
+
+# -----------------------------------------------------------------------------
+# BACKLOG — preview environments per PR (см. ТЗ Workflow 3)
+# -----------------------------------------------------------------------------
+# Предполагаемая схема:
+#   1. on: pull_request → build web image c тегом pr-${{ event.number }}-${SHA}
+#   2. SSH на Aeza VPS (185.125.101.83) — простаивает, можно использовать
+#   3. docker compose -p brikko-pr-${NUMBER} -f infra/docker-compose.preview.yml up -d
+#   4. Caddy на Aeza → wildcard cert для *.preview.brikko.ru, route на контейнер
+#   5. Comment в PR: "Preview: https://pr-${NUMBER}.preview.brikko.ru"
+#   6. on: pull_request closed → docker compose -p brikko-pr-${NUMBER} down -v
+#
+# Препятствия (отложено):
+#   - на Aeza ещё нет docker-compose stack'а под preview
+#   - Caddy там настроен под proxy outbound, не inbound web-routing
+#   - DNS *.preview.brikko.ru не настроен (нужен wildcard A-record)
+#   - GHCR storage quota: ~50 PR в работу одновременно × 200MB image = 10GB,
+#     терпимо, но нужен image-cleanup job
+#
+# Trigger: GH issue + 2-3 ч работы на отдельной ветке.
+# -----------------------------------------------------------------------------

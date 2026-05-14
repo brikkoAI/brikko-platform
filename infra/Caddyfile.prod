@@ -1,0 +1,132 @@
+# /opt/brikko/Caddyfile — production reverse-proxy для Reg.ru.
+# Caddy 2.8+, авто-SSL через Let's Encrypt.
+#
+# 4 хоста:
+#   brikko.ru, www.brikko.ru, app.brikko.ru → web (Next.js :3000)
+#   api.brikko.ru                            → gateway (FastAPI :8000)
+#   docs.brikko.ru                           → gateway /docs (заглушка пока)
+#
+# Пока DNS не подключён — Caddy не сможет получить cert у LE и будет падать
+# в retry-loop (это ок). После настройки DNS перезапустить:
+#   docker compose -f docker-compose.prod.yml restart caddy
+
+{
+    email ops@brikko.ru
+    admin off
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+# -------- Лендинг + кабинет (Next.js) --------
+brikko.ru, www.brikko.ru, app.brikko.ru {
+    encode gzip zstd
+
+    @static path /static/* /_next/static/*
+    header @static Cache-Control "public, max-age=31536000, immutable"
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://api.brikko.ru https://*.ingest.sentry.io https://*.sentry.io; frame-ancestors 'self'; form-action 'self'; base-uri 'self'; object-src 'none'"
+        X-Frame-Options "SAMEORIGIN"
+        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(self)"
+        -Server
+    }
+
+    reverse_proxy web:3000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /var/log/caddy/web.log {
+            roll_size 100mb
+            roll_keep 7
+        }
+        format json
+    }
+}
+
+# -------- API Gateway --------
+api.brikko.ru {
+    encode gzip
+
+    request_body {
+        max_size 10MB
+    }
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        X-Frame-Options "DENY"
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+        -Server
+    }
+
+    @metrics_block path /metrics /healthz/deep /admin/*
+    handle @metrics_block {
+        respond "Not Found" 404
+    }
+
+    @suspicious {
+        path_regexp evil ^(?i).*(\.\./|/etc/passwd|/proc/|/\.git/|/\.env|/wp-admin|/wp-login|\bunion.+select\b|\bbenchmark\(|\bsleep\().*$
+    }
+    handle @suspicious {
+        respond "Not Found" 404
+    }
+
+    reverse_proxy gateway:8000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/api.log {
+            roll_size 100mb
+            roll_keep 14
+        }
+        format json
+    }
+}
+
+# -------- Docs (заглушка — gateway отдаёт OpenAPI на /docs) --------
+docs.brikko.ru {
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+
+    reverse_proxy gateway:8000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /var/log/caddy/docs.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format json
+    }
+}
+
+# -------- HTTP → HTTPS (Caddy делает это by default, но явно безопаснее) --------
+http://brikko.ru, http://www.brikko.ru, http://app.brikko.ru,
+http://api.brikko.ru, http://docs.brikko.ru {
+    redir https://{host}{uri} permanent
+}

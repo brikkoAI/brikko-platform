@@ -1,0 +1,209 @@
+# /opt/voltari/Caddyfile
+# Production reverse-proxy конфиг. Caddy 2.8+, авто-SSL через Let's Encrypt.
+
+{
+    # Глобальные настройки
+    email ops@brikko.ru          # для Let's Encrypt уведомлений
+    admin off                     # не открываем admin API наружу
+    # TLS: Caddy по умолчанию TLS 1.2/1.3 only (SSLv3/TLS 1.0/1.1 запрещены).
+    # HTTP/3 (QUIC) включён — клиенты на современных браузерах получают
+    # ниже latency. h1 fallback — для http-libs без http2 поддержки.
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+# -------- Лендинг + кабинет (SPA/SSR) --------
+# Все web-домены: apex, www, app (alias), docs (Next.js route).
+# www → редирект на apex; app/docs — отдают тот же web-стек.
+brikko.ru, www.brikko.ru, app.brikko.ru, docs.brikko.ru {
+    encode gzip zstd
+
+    # Cache headers для статики
+    @static path /static/* /_next/static/*
+    header @static Cache-Control "public, max-age=31536000, immutable"
+
+    # Security headers
+    header {
+        # HSTS preload — host попадёт в browser HSTS preload list после
+        # подачи на https://hstspreload.org (ручное действие, см. RUNBOOK §13).
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # CSP — frame-ancestors заменяет X-Frame-Options для современных браузеров.
+        # SAMEORIGIN — мы не embed'имся в чужих iframe (anti-clickjacking).
+        # connect-src — наш API + Sentry. ymetrika/google-analytics добавим позже
+        # отдельной строкой если понадобится.
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://api.brikko.ru https://*.ingest.sentry.io https://*.sentry.io; frame-ancestors 'self'; form-action 'self'; base-uri 'self'; object-src 'none'"
+        X-Frame-Options "SAMEORIGIN"
+        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(self)"
+        # Снимаем server-header
+        -Server
+    }
+
+    reverse_proxy web:3000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /var/log/caddy/web.log {
+            roll_size 100mb
+            roll_keep 7
+        }
+        format json
+    }
+}
+
+# -------- API Gateway --------
+api.brikko.ru {
+    encode gzip
+
+    # API-запросы могут содержать большие промпты
+    request_body {
+        max_size 10MB
+    }
+
+    # Базовая защита от L7-флуда (детальный rate-limit per-API-key — внутри gateway через Redis)
+    # Caddy 2.x не имеет нативного rate_limit без plugin'а, поэтому только размер тела;
+    # DDoS-защита — через Cloudflare proxy перед доменом (free tier).
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        # API нельзя положить в iframe — anti-CSRF + anti-clickjacking.
+        X-Frame-Options "DENY"
+        # API не отдаёт HTML — agresivная CSP.
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+        -Server
+    }
+
+    # /metrics, /healthz/internal — наружу не торчат. Только локальный
+    # Promtail/Prometheus / scrape с самого VPS может дёрнуть. Если в Sprint 6+
+    # будем гонять Grafana Cloud Agent — пропишем allowlist по IP здесь.
+    @metrics_block path /metrics /healthz/deep /admin/*
+    handle @metrics_block {
+        respond "Not Found" 404
+    }
+
+    # WAF: грубые SQLi / path traversal / common attack patterns на уровне URL.
+    # Application-уровневые валидации — внутри gateway, это просто дешёвый щит.
+    @suspicious {
+        path_regexp evil ^(?i).*(\.\./|/etc/passwd|/proc/|/\.git/|/\.env|/wp-admin|/wp-login|\bunion.+select\b|\bbenchmark\(|\bsleep\().*$
+    }
+    handle @suspicious {
+        respond "Not Found" 404
+    }
+
+    reverse_proxy gateway:8000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # LLM-запросы могут длиться долго (стриминг до 5 мин)
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/api.log {
+            roll_size 100mb
+            roll_keep 14
+        }
+        format json
+    }
+}
+
+# -------- Staging environment --------
+# Один домен staging.brikko.ru — роутит web и api по path:
+#   https://staging.brikko.ru/        → web-staging:3000
+#   https://staging.brikko.ru/api/v1  → gateway-staging:8000/v1
+# Это упрощает CORS (один origin), за счёт небольшого усложнения rewrite'а.
+staging.brikko.ru {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        # X-Robots-Tag — staging не должен попадать в Google
+        X-Robots-Tag "noindex, nofollow"
+        -Server
+    }
+
+    # API: /api/v1/* → gateway-staging
+    @api path /api/v1/*
+    handle @api {
+        # Срезаем /api префикс перед отправкой на gateway:
+        #   /api/v1/chat/completions → /v1/chat/completions
+        uri strip_prefix /api
+        reverse_proxy gateway-staging:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                response_header_timeout 300s
+                read_timeout 300s
+                write_timeout 300s
+            }
+        }
+    }
+
+    # Прочее: /, /app, /pricing, /_next/* → web-staging
+    handle {
+        reverse_proxy web-staging:3000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    log {
+        output file /var/log/caddy/staging.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format json
+    }
+}
+
+# -------- Старый поддомен cabinet → редирект на /app в основном домене --------
+cabinet.brikko.ru {
+    redir https://brikko.ru/app{uri} permanent
+}
+
+# -------- www.brikko.ru → apex (canonical) --------
+# (входит в основной блок выше через `www.brikko.ru`, но для www-only-вариантов
+# других доменов отдельные блоки ниже.)
+
+# -------- брикко.рф (IDN, Punycode) → редирект на brikko.ru --------
+# В Caddyfile используем Punycode — кириллицу некоторые версии Caddy
+# парсят криво. Реальные клиенты могут вводить и кириллицу, и Punycode.
+xn--80ajjbl9c.xn--p1ai, www.xn--80ajjbl9c.xn--p1ai {
+    redir https://brikko.ru{uri} permanent
+}
+
+# -------- brikko.online → редирект на brikko.ru (защита от squatting) --------
+# Дополнительная защита: эти редиректы дублируются Cloudflare Page Rules,
+# но если CF DNS-only сменим — origin тоже редиректит.
+brikko.online, www.brikko.online {
+    redir https://brikko.ru{uri} permanent
+}
+
+# -------- brikko.tech → редирект на brikko.ru --------
+brikko.tech, www.brikko.tech {
+    redir https://brikko.ru{uri} permanent
+}
+
+# -------- HTTP → HTTPS (на всякий случай, Caddy делает это by default) --------
+http://brikko.ru, http://www.brikko.ru, http://api.brikko.ru,
+http://app.brikko.ru, http://docs.brikko.ru, http://cabinet.brikko.ru,
+http://xn--80ajjbl9c.xn--p1ai, http://www.xn--80ajjbl9c.xn--p1ai,
+http://brikko.online, http://www.brikko.online,
+http://brikko.tech, http://www.brikko.tech {
+    redir https://{host}{uri} permanent
+}

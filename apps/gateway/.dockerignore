@@ -1,0 +1,54 @@
+# /apps/gateway/.dockerignore
+# Exclude noise from the Docker build context. The Dockerfile copies only
+# `voltari_gateway/`, `alembic/`, `pyproject.toml`, `README.md`, `alembic.ini`,
+# but the build context still ships everything in this dir to the daemon.
+# Without ignores `.venv/` (~250 MB) was being uploaded on every build.
+
+# Python virtualenvs / caches
+.venv
+venv
+env
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.tox
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Coverage / build artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+dist/
+build/
+*.egg-info
+.eggs/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Secrets — never bake into image
+.env
+.env.*
+!.env.example
+
+# Docs / dev-only — *.md в общем виде, кроме README.md (нужен hatchling
+# build, см. Dockerfile: `COPY pyproject.toml README.md`).
+*.md
+!README.md
+!alembic/README
+
+TECH_DEBT.md
+docs/
+tests/
+.git
+.gitignore
+.gitattributes

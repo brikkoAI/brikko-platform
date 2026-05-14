@@ -1,0 +1,143 @@
+# Brikko — pre-commit hooks (двойная защита против поломок CI).
+#
+# Контекст (2026-05-01): за месяц накопилось 3 независимых класса проблем,
+# которые проходили локально, но падали на CI:
+#   1. ruff format --check скипался когда ruff check падал в одной job.
+#   2. pytest.mark.parametrize("a,b", ...) — старый ruff пропускал, новый PT006 — нет.
+#   3. vitest welcome-modal.test.tsx с устаревшим STORAGE_KEY (voltari.* → brikko.*).
+#
+# Цель — поймать всё локально ДО push'а. Целевое время на типичный коммит < 30s.
+# Heavy steps (full pytest, full vitest, playwright) — оставлены в CI, тут только
+# fast-feedback линт + типы + format + затронутые тесты.
+#
+# Установка после клонирования: `pre-commit install`
+# Прогнать на всём репо вручную:    `pre-commit run --all-files`
+
+minimum_pre_commit_version: "3.5.0"
+
+default_language_version:
+  python: python3.12
+
+# files-фильтр на уровне репо: пропускаем node_modules / .venv / build artefacts.
+exclude: |
+  (?x)^(
+    .*/node_modules/.*|
+    .*/\.venv/.*|
+    .*/\.next/.*|
+    .*/dist/.*|
+    .*/build/.*|
+    .*/__pycache__/.*|
+    .*/htmlcov/.*|
+    .*/playwright-report/.*|
+    apps/web/openapi-snapshot\.json|
+    apps/gateway/data/.*|
+    Claude\ Design/.*|
+    .*\.lock|
+    package-lock\.json
+  )$
+
+repos:
+  # ---------- Универсальные базовые проверки ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # multi-document YAML (k8s-style ---) встречается в CI; разрешаем.
+        args: [--allow-multiple-documents]
+        # SOPS-encrypted YAML парсится, но имеет странные ключи sops; ничего не валит.
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+
+  # ---------- Gateway (Python) ----------
+  # Каждый ruff-hook отдельный. Если `ruff check` падает — `ruff format --check`
+  # ВСЁ РАВНО прогоняется (pre-commit запускает все hooks подряд независимо;
+  # см. https://pre-commit.com/#confining-hooks-to-a-path и FAQ "fail_fast").
+  # fail_fast: false (default) — это и есть all-or-nothing на стороне локального hook'а.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Совпадает с минорной версией в apps/gateway/pyproject.toml (ruff>=0.7,<1.0).
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        name: ruff check (gateway)
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^apps/gateway/.*\.py$
+      - id: ruff-format
+        name: ruff format --check (gateway)
+        args: [--check]
+        files: ^apps/gateway/.*\.py$
+
+  # mypy в strict-режиме. Запускаем ТОЛЬКО на production-коде voltari_gateway/,
+  # как в CI (см. .github/workflows/ci.yml#gateway-lint). tests/ имеет
+  # relaxed override в pyproject.toml.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy --strict (gateway)
+        files: ^apps/gateway/voltari_gateway/.*\.py$
+        # Убеждаемся что mypy запускается из правильного cwd с pyproject.toml.
+        args: [--config-file=apps/gateway/pyproject.toml, apps/gateway/voltari_gateway/]
+        pass_filenames: false
+        # Зависимости для type-checking. Минимум, без heavy SDK (anthropic, google-genai
+        # и т.п. идут через ignore_missing_imports в pyproject.toml).
+        additional_dependencies:
+          - pydantic>=2.9
+          - pydantic-settings>=2.5
+          - fastapi>=0.115
+          - sqlalchemy>=2.0
+          - httpx>=0.27
+          - types-redis
+          - types-PyYAML
+
+  # ---------- Web (TypeScript / Next.js) ----------
+  # local-репо: вызываем локальные npm-скрипты, чтобы версии eslint/vitest
+  # совпадали ровно с теми, что в apps/web/package.json (lock-файл — единственный
+  # источник правды).
+  - repo: local
+    hooks:
+      - id: web-eslint
+        name: eslint (web)
+        # next lint --max-warnings 0 — то же что в CI web-lint.
+        # eslint понимает --fix, но в pre-commit мы --check-only для скорости
+        # и предсказуемости (если хотите авто-fix — `npm run lint -- --fix` руками).
+        entry: bash -c 'cd apps/web && npm run lint --silent'
+        language: system
+        files: ^apps/web/.*\.(ts|tsx|js|jsx|mjs|cjs)$
+        pass_filenames: false
+        # eslint берёт конфиг из apps/web/.eslintrc — игнорирует passed paths
+        # если они не нужны; pass_filenames=false → запуск ровно как в CI.
+
+      - id: web-typecheck
+        name: tsc --noEmit (web)
+        entry: bash -c 'cd apps/web && npm run typecheck --silent'
+        language: system
+        files: ^apps/web/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: web-vitest
+        name: vitest run (web — only changed files)
+        # vitest --changed=HEAD — запускает только тесты, затронутые diff'ом
+        # с указанным ref. На pre-commit hook'е HEAD = последний коммит, т.е.
+        # vitest найдёт тесты для staged-файлов через зависимости (vite-graph).
+        # Если ничего не изменилось из tested-файлов — vitest exits 0 моментально.
+        # Fallback: если --changed по какой-то причине пропустит файл — full
+        # vitest всё равно отработает в CI web-test.
+        entry: bash -c 'cd apps/web && npx vitest run --changed=HEAD --passWithNoTests --reporter=default'
+        language: system
+        files: ^apps/web/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: false
+
+# ----------------------- Что НЕ в pre-commit (намеренно) -----------------------
+# - pytest (full) — слишком долго (>2 мин на gateway), оставлено в CI gateway-test.
+# - playwright e2e — десятки секунд + browser launch, в CI web-e2e.
+# - trivy security scan — несколько минут на build образа, в CI security-scan.
+# - alembic migrations — требуется живой Postgres, в CI gateway-test.
+#
+# Если нужен «полный прогон» локально перед push — используй:
+#   make ci-local   (или эквивалент из CONTRIBUTING.md — § Quality gate)

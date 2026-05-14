@@ -1,0 +1,35 @@
+[Unit]
+Description=Brikko Bridge — Telegram bot (hub)
+Documentation=https://github.com/brikkoAI/brikko-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust if you cloned to a different path / use a non-root user.
+User=root
+WorkingDirectory=/opt/brikko-bridge
+EnvironmentFile=/opt/brikko-bridge/bot.env
+ExecStart=/opt/brikko-bridge/.venv/bin/python -m bot.main
+
+# Restart policy. The bot polls Telegram, so a network blip is normal.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Hardening — recommended on shared VPS where other services run.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/brikko-bridge/data
+ProtectHome=true
+PrivateTmp=true
+
+# Logging via journald — `journalctl -u brikko-bridge-bot -f` to tail.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brikko-bridge-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,237 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "title": "Brikko · Overview",
+  "tags": ["brikko", "overview"],
+  "uid": "brikko-overview",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "API up",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}
+        }
+      },
+      "targets": [
+        {"expr": "up{job=\"brikko-gateway\"}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Requests/s",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}},
+      "targets": [
+        {"expr": "sum(rate(voltari_http_requests_total[1m]))", "refId": "A"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Error rate (5xx)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}
+        }
+      },
+      "targets": [
+        {"expr": "sum(rate(voltari_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(voltari_http_requests_total[5m])), 1)", "refId": "A"}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Latency p50 / p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum(rate(voltari_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(voltari_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Active accounts (24h)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 4},
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {"expr": "count(count by (account_id)(rate(voltari_http_requests_total{route=~\"/v1/.*\"}[24h])))", "refId": "A"}
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Cost (kop) last 24h",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 4},
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {"expr": "sum(increase(voltari_billing_kopeck_total[24h]))", "refId": "A"}
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Cache hit rate",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 4},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "targets": [
+        {"expr": "sum(rate(voltari_cache_hits_total[10m])) / clamp_min(sum(rate(voltari_cache_hits_total[10m])) + sum(rate(voltari_cache_misses_total[10m])), 1)", "refId": "A"}
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Host CPU usage",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}},
+      "targets": [
+        {"expr": "1 - avg by (instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))", "legendFormat": "{{instance}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Host RAM used",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}},
+      "targets": [
+        {"expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "{{instance}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Disk usage (/)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.85}]}
+        }
+      },
+      "targets": [
+        {"expr": "1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})", "refId": "A"}
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Network in/out",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "Bps"}},
+      "targets": [
+        {"expr": "sum by (device)(rate(node_network_receive_bytes_total{device!~\"lo|docker.*|veth.*|br-.*\"}[5m]))", "legendFormat": "in {{device}}", "refId": "A"},
+        {"expr": "sum by (device)(rate(node_network_transmit_bytes_total{device!~\"lo|docker.*|veth.*|br-.*\"}[5m]))", "legendFormat": "out {{device}}", "refId": "B"}
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Container CPU",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "targets": [
+        {"expr": "sum by (name)(rate(container_cpu_usage_seconds_total{name=~\"brikko-.*\"}[5m]))", "legendFormat": "{{name}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Container RAM",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "targets": [
+        {"expr": "sum by (name)(container_memory_working_set_bytes{name=~\"brikko-.*\"})", "legendFormat": "{{name}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Provider latency p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (provider, le)(rate(voltari_provider_latency_seconds_bucket[5m])))", "legendFormat": "{{provider}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Provider error rate",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "targets": [
+        {"expr": "sum by (provider)(rate(voltari_provider_requests_total{status=\"error\"}[5m])) / clamp_min(sum by (provider)(rate(voltari_provider_requests_total[5m])), 1)", "legendFormat": "{{provider}}", "refId": "A"}
+      ]
+    }
+  ]
+}

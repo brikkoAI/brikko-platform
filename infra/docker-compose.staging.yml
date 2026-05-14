@@ -1,0 +1,200 @@
+# /opt/voltari/infra/docker-compose.staging.yml
+#
+# Staging — отдельный compose project на том же VPS, что и production.
+# Изоляция:
+#   - container_name: voltari-staging-* (vs voltari-* для prod)
+#   - volumes: pg_data_staging, redis_data_staging, caddy_data_staging
+#   - networks: staging-frontend-net, staging-backend-net
+#   - subdomain: staging.brikko.ru → отдельный Caddy upstream
+#
+# Запуск:
+#   cd /opt/voltari
+#   # Расшифровать staging-secrets:
+#   SOPS_FILE=infra/.env.staging.sops.yaml OUT=infra/.env.staging \
+#     infra/scripts/sops-decrypt-env.sh
+#   # Поднять:
+#   docker compose -p voltari-staging \
+#     --env-file infra/.env.staging \
+#     -f infra/docker-compose.staging.yml \
+#     up -d
+#
+# Workflow:
+#   - merge → main → CI зелёный → автоматический deploy на staging
+#   - проверяем UX, миграции на staging-данных
+#   - вручную trigger workflow_dispatch с тегом v* → deploy на prod
+#
+# Ресурсы (на той же 4vCPU/8GB VPS):
+#   - postgres-staging:  1g  / 0.5 cpu  (легче чем prod, синтетическая нагрузка)
+#   - gateway-staging:   1g  / 1 cpu
+#   - web-staging:       512m / 0.5 cpu
+#   - redis-staging:     256m / 0.25 cpu
+#   - Caddy общий с prod (роутит по hostname)
+
+name: voltari-staging
+
+networks:
+  # staging-frontend-net — общая с prod (чтобы Caddy в prod-compose мог
+  # роутить на gateway-staging:8000 и web-staging:3000 по имени).
+  # Объявляем как external — основная сеть создаётся prod-compose'ом.
+  staging-frontend-net:
+    name: voltari_frontend-net
+    external: true
+  # staging-backend-net — изолирована, только staging-postgres + staging-redis.
+  staging-backend-net:
+    driver: bridge
+
+volumes:
+  pg_data_staging:
+  redis_data_staging:
+
+services:
+  # -------- API Gateway (staging) --------
+  gateway-staging:
+    image: ghcr.io/bbchort/voltari-gateway:${STAGING_IMAGE_TAG:-latest}
+    container_name: voltari-staging-gateway
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      ENVIRONMENT: staging
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voltari}:${POSTGRES_PASSWORD}@postgres-staging:5432/${POSTGRES_DB:-voltari}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis-staging:6379/0
+      LOG_LEVEL: debug
+      # Staging — billing-тестовые ключи (test_*)
+      # Smart-router в staging fail-fast вместо retry, чтобы быстрее ловить bug'и
+      ROUTER_RETRY_DISABLED: "true"
+    expose:
+      - "8000"
+    networks:
+      - staging-frontend-net
+      - staging-backend-net
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+      redis-staging:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        # labels — Promtail видит их и тегирует логи как env=staging
+        labels: "env=staging,service=gateway"
+
+  # -------- Web (staging) --------
+  web-staging:
+    image: ghcr.io/bbchort/voltari-web:${STAGING_IMAGE_TAG:-latest}
+    container_name: voltari-staging-web
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://staging.brikko.ru/api/v1}
+      NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-https://staging.brikko.ru}
+    expose:
+      - "3000"
+    networks: [staging-frontend-net]
+    depends_on:
+      gateway-staging:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://localhost:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "env=staging,service=web"
+
+  # -------- PostgreSQL 16 (staging) --------
+  postgres-staging:
+    image: postgres:16-alpine
+    container_name: voltari-staging-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-voltari}
+      POSTGRES_USER: ${POSTGRES_USER:-voltari}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - pg_data_staging:/var/lib/postgresql/data
+    networks: [staging-backend-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voltari} -d ${POSTGRES_DB:-voltari}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c maintenance_work_mem=64MB
+      -c work_mem=8MB
+      -c max_connections=50
+      -c log_min_duration_statement=500
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        labels: "env=staging,service=postgres"
+
+  # -------- Redis 7 (staging) --------
+  redis-staging:
+    image: redis:7-alpine
+    container_name: voltari-staging-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data_staging:/data
+    networks: [staging-backend-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        labels: "env=staging,service=redis"
+
+  # NB: Caddy один на VPS, обслуживает оба окружения. Конфиг в Caddyfile.
+  # Подключаем staging-сеть через external network ниже.
+
+# Подключаем prod-Caddy к нашей frontend-net через внешнюю сеть.
+# (Caddy в prod-compose project, видит staging-сервисы через docker DNS
+# по имени контейнера.)

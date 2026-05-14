@@ -1,0 +1,287 @@
+[project]
+name = "voltari-gateway"
+version = "0.1.0"
+description = "Brikko — OpenAI-compatible LLM gateway for Russian businesses"
+authors = [{name = "Brikko", email = "dev@brikko.local"}]
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+license = {text = "Proprietary"}
+
+dependencies = [
+    # Web framework
+    # 2026-05-10: bump fastapi to 0.119+ для совместимости со starlette 0.49.1.
+    # CVE-2025-62727 (HIGH, DoS via Range header merging) — fix в starlette 0.49.1.
+    # fastapi <0.119 тянул starlette<0.47, что блокировало security-pin.
+    "fastapi>=0.119,<1.0",
+    "starlette>=0.49.1,<0.50",
+    "uvicorn[standard]>=0.32,<0.33",
+    "gunicorn>=23.0,<24.0",
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+    "sse-starlette>=2.1,<3.0",
+    "python-multipart>=0.0.17",
+    "email-validator>=2.2,<3.0",
+    # Jinja2: используется api/oauth.py для рендера consent.html. Раньше был
+    # transitive из fastapi-extras, после узкой сборки нужен явно.
+    "jinja2>=3.1,<4.0",
+
+    # HTTP client
+    "httpx[http2]>=0.27,<0.28",
+
+    # Provider SDKs
+    "openai>=1.54,<2.0",
+    "anthropic>=0.39,<1.0",
+    "google-genai>=0.3,<2.0",
+
+    # Database
+    "sqlalchemy>=2.0.36,<3.0",
+    "asyncpg>=0.30,<0.31",
+    "alembic>=1.14,<2.0",
+
+    # Redis
+    "redis[hiredis]>=5.2,<6.0",
+
+    # Auth & crypto
+    "argon2-cffi>=23.1,<24.0",
+    # 2026-05-10: lifted upper-bound to >=46.0.5 для CVE-2026-26007
+    # (subgroup attack в EC primitives, fix в 46.0.5).  44.x/45.x — vulnerable.
+    "cryptography>=46.0.5,<47.0",
+    "pyjwt>=2.10,<3.0",
+    "itsdangerous>=2.2,<3.0",
+    # TOTP / 2FA (Sprint 6) — RFC 6238, ~20 KB pure Python.
+    "pyotp>=2.9,<3.0",
+
+    # Observability
+    "structlog>=24.4,<25.0",
+    # Sentry SDK (Sprint 5) — backend error tracking, optional via DSN.
+    # ``fastapi`` extras pulls Starlette/asyncio/httpx/redis/sqlalchemy integrations.
+    "sentry-sdk[fastapi]>=2.18,<3.0",
+    # Prometheus client — minimal, official, ~100 KB.
+    "prometheus-client>=0.21,<1.0",
+
+    # Retry
+    "tenacity>=9.0,<10.0",
+
+    # PDF generation (Comply Pack — Sprint 4 Поток M).
+    # Pure-Python (no system Cairo/etc), Alpine-friendly, ~200 KB.
+    "fpdf2>=2.8,<3.0",
+
+    # Async SMTP (email/client.py смены 2026-05-01). Lazy-imported только
+    # когда EMAIL_BACKEND=smtp; в console-режиме не используется.
+    "aiosmtplib>=3.0,<4.0",
+
+    # JSON Schema validation (Sprint 9 — strict response_format mode).
+    # Used by api/chat.py to reject malformed schemas at the gateway
+    # rather than paying for an OpenAI 4xx. Already a transitive dep of
+    # several SDKs; pinning explicitly so we control the upgrade path.
+    "jsonschema>=4.23,<5.0",
+
+    # Audio metadata (Sprint M1 — STT). Pure-Python, ~500 KB, supports
+    # mp3/m4a/wav/ogg/flac out of the box — exactly the formats OpenAI
+    # Whisper accepts. Used by api/audio.py to compute duration before
+    # forwarding so we can bill on minutes WITHOUT ffmpeg.
+    "mutagen>=1.47,<2.0",
+
+    # Token counting for embeddings billing (Sprint M1). OpenAI's official
+    # tokenizer; required for accurate per-token billing of /v1/embeddings.
+    # Wheel-only install on supported Pythons (3.12 OK).
+    "tiktoken>=0.8,<1.0",
+
+    # Russian morphological NER for PII PERSON detection (Sprint 13 / Privacy v2
+    # — Phase 2). ~250 MB of pre-trained navec embeddings + pymorphy2
+    # dictionaries pulled at install time. Loaded lazily on first call to
+    # voltari_gateway.pii.ru_person.find_persons(); optional warm_up() at
+    # app.lifespan amortises the ~1.5 s cold start. Replaces the primitive
+    # «2-3 capitalized Cyrillic words» heuristic that over-masked geography
+    # and missed declined ФИО («Иванову Ивану Петровичу»). See
+    # voltari_gateway/pii/ru_person.py for details.
+    "natasha>=1.6,<2.0",
+
+    # Transitive: pymorphy2 (under natasha) imports `pkg_resources`, which
+    # was removed from setuptools 81+. Pin <81 until pymorphy2 ships a
+    # release that uses importlib.metadata directly. Without this pin the
+    # gateway hits a `ModuleNotFoundError: No module named 'pkg_resources'`
+    # the first time `find_persons()` is called.
+    "setuptools<81",
+
+    # Model Context Protocol — official Anthropic SDK (Sprint MCP S2).
+    # Provides Server.lowlevel + StreamableHTTPSessionManager for the
+    # /mcp endpoint exposed to Claude Desktop / Cursor / Continue agents.
+    # CEO 2026-05-11: official SDK, not FastMCP — fewer surprises on
+    # protocol-version bumps. anyio + httpx are already transitive.
+    "mcp>=1.27,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "pytest-cov>=6.0,<7.0",
+    # 2026-05-13: retry-on-fail для async flaky tests (test_stream_happy_path
+    # с event-loop binding issue падает ~30% запусков в CI). Root cause —
+    # sse_starlette background task переживает test fixture teardown.
+    # Полноценный fix потребует переписки SSE-test через explicit lifespan;
+    # пока retry'аем 2 раза с задержкой 1с.
+    "pytest-rerunfailures>=14,<16",
+    # 2026-05-13: hard timeout per-test. test_stream_happy_path hang'ал
+    # на sse_starlette background task → pytest-rerunfailures бесполезен
+    # пока test не падает. 60с per test + thread method = SIGTERM hang.
+    "pytest-timeout>=2.3,<3.0",
+    "aiosqlite>=0.20,<1.0",
+    "fakeredis>=2.26,<3.0",
+    "respx>=0.21,<1.0",
+    "ruff>=0.7,<1.0",
+    "mypy>=1.13,<2.0",
+    # Postgres integration tests (skip if no Docker / SKIP_POSTGRES_TESTS=1).
+    "testcontainers[postgres]>=4.8,<5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["voltari_gateway"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# По умолчанию: тесты для unit/контракт/моков (быстрые, без внешних сервисов).
+# - tests/integration/ — testcontainers postgres (запускаются отдельным CI job'ом)
+# - tests/smoke/ — smoke-after-deploy против реального URL (запускаются только из smoke.yml)
+# Чтобы прогнать всё разом локально: `pytest --override-ini="addopts=" tests/` (с docker)
+addopts = "-ra --strict-markers --strict-config --ignore=tests/integration --ignore=tests/smoke --timeout=60 --timeout-method=thread"
+markers = [
+    "integration: tests that require external services (Docker, Postgres, etc.)",
+    "smoke: post-deploy smoke tests — run against deployed URL via VOLTARI_SMOKE_BASE_URL",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:sqlalchemy.*",
+    # fpdf2 cell(ln=True) is supported but deprecated — refactor on bump.
+    "ignore::DeprecationWarning:fpdf.*",
+]
+
+[tool.coverage.run]
+# Source: only first-party gateway code (excludes nested test fixtures
+# such as ``voltari_gateway/router/tests/`` which are unit-test files
+# living inside the package — not runtime code worth measuring).
+source = ["voltari_gateway"]
+# ``asyncio`` plugin: trace lines executed inside coroutines correctly.
+# Without it, coverage.py can miss lines that run after an await boundary
+# that suspends and resumes on a different event-loop iteration. Sprint 3
+# Поток H — fixed false-negative gaps in api/auth signup, etc.
+concurrency = ["thread", "greenlet"]
+omit = [
+    # In-package tests + their conftest (these are tests, not subjects).
+    "voltari_gateway/router/tests/*",
+    # Migration helpers run only inside ``alembic upgrade``; the alembic
+    # invocation isn't part of the unit test runner. Coverage is
+    # exercised by the integration suite (testcontainers postgres).
+    "voltari_gateway/db/migration_helpers.py",
+    # Email transport adapter is mocked across all tests; the real SMTP
+    # path requires network and isn't covered by unit tests.
+    "voltari_gateway/email/client.py",
+    # main.py is largely lifespan/startup wiring exercised at deploy time.
+    "voltari_gateway/main.py",
+]
+
+[tool.coverage.report]
+# Don't double-count abstract / stub branches.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "PT", "RUF"]
+ignore = [
+    "E501",
+    # Кириллические буквы в строках/docstrings/комментариях — у нас русскоязычный
+    # стартап, кириллица в текстах для пользователей и в pythonic comments — норма.
+    # ruff подсвечивает похожие на латиницу буквы (а↔a, е↔e), но это не ошибка.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # FastAPI идиома `def handler(dep = Depends(...))` использует мутабельные
+    # default arguments легитимно — это часть DI-фреймворка, не баг.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Тестовые файлы могут позволить себе чуть больше — assert на широкие исключения
+# (B017), pytest-raises-too-broad (PT011), composite assertions (PT018) — это
+# часто более читаемо чем split на 5 микро-тестов.
+"tests/**/*.py" = ["B017", "PT011", "PT018", "PT019", "RUF059"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+# Test-файлы могут позволить себе менее строгие типы — assert mock-объектов с
+# нестрогими типами, factory-функции без аннотаций, fixture'ы без явных return-типов.
+# Это легитимно: тесты не пользователь-facing, инварианты проверяются runtime'ом.
+[[tool.mypy.overrides]]
+module = ["tests.*", "voltari_gateway.router.tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+disallow_untyped_decorators = false
+
+# Внешние SDK провайдеров не предоставляют type stubs (google.genai, sber giga,
+# yandex foundation models, частично anthropic для streaming). Игнорируем их
+# missing-imports — наш wrapper-код всё равно проверяется по контракту через
+# Provider*Error → ChatCompletionResponse в base.py.
+[[tool.mypy.overrides]]
+module = [
+    "google.*",
+    "google_genai.*",
+    "anthropic.*",
+    "yandex.*",
+    "yandexcloud.*",
+    # types-jsonschema would give us stubs but it's a 1MB+ types package
+    # we don't otherwise need; we cast at the boundary in
+    # voltari_gateway/utils/response_format.py.
+    "jsonschema",
+    "jsonschema.*",
+    # Natasha + pymorphy2 ship without type stubs; pyi-tools (`types-natasha`)
+    # don't exist. We treat their public API as `Any` at the boundary in
+    # voltari_gateway/pii/ru_person.py.
+    "natasha",
+    "natasha.*",
+    "pymorphy2",
+    "pymorphy2.*",
+    "yargy",
+    "yargy.*",
+]
+ignore_missing_imports = true
+
+# Bandit (SAST) — заменяет отключённый GH Code-Scanning CodeQL.
+# Запускается в CI: `bandit -r voltari_gateway/ -ll -ii`
+# Skip-list: правила с устойчивыми false-positives для нашей архитектуры.
+[tool.bandit]
+skips = [
+    # B104 hardcoded_bind_all_interfaces — намеренно: FastAPI слушает 0.0.0.0
+    # внутри Docker-контейнера (изоляция через docker network). Также 3
+    # места возвращают "0.0.0.0" как fallback-значение в audit-логе когда
+    # request.client.host is None — это string literal, не bind-call.
+    "B104",
+    # B101 assert_used — используется в pytest-тестах. Production-код
+    # не использует assert (проверял grep'ом). Bandit не различает.
+    "B101",
+    # B110 try/except/pass — это намеренный fire-and-forget паттерн в
+    # PII-cleanup и observability/request_log где failure не должен
+    # повлиять на главный flow (билинг, выдачу ответа клиенту).
+    "B110",
+    # B105 hardcoded_password_string — все срабатывания false-positive:
+    # ивент-имена ("password_changed"), token_type="Bearer" в OAuth-ответах.
+    # Реальные пароли мы не хранили бы в коде.
+    "B105",
+]

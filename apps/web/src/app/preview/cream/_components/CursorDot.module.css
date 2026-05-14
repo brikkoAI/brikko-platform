@@ -1,0 +1,51 @@
+.dot {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-1);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9999;
+  mix-blend-mode: difference;
+  will-change: transform, width, height, opacity, filter;
+  transition:
+    width 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    height 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 400ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:global([data-theme='dark']) .dot {
+  mix-blend-mode: difference;
+}
+
+.dot[data-visible='true'] {
+  opacity: 0.4;
+}
+
+.dot[data-hover='true'] {
+  width: 24px;
+  height: 24px;
+  opacity: 0.6;
+  filter: blur(2px);
+  transform-origin: center center;
+  /* recenter — JS даёт top-left = cursor - 4, при размере 24 нужно cursor - 12.
+   * Дополнительный shift через margin: при hover center остаётся под cursor. */
+  margin: -8px 0 0 -8px;
+}
+
+@media (hover: none) {
+  .dot {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    display: none;
+  }
+}

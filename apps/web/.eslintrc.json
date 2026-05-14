@@ -1,0 +1,18 @@
+{
+  "extends": ["next/core-web-vitals", "plugin:security/recommended-legacy"],
+  "rules": {
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "security/detect-object-injection": "off",
+    "security/detect-non-literal-fs-filename": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/mocks/**", "src/lib/router-demo.ts"],
+      "rules": {
+        "security/detect-object-injection": "off",
+        "security/detect-non-literal-regexp": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["node_modules", ".next", "out", "build", "playwright-report"]
+}

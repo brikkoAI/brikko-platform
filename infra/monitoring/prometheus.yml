@@ -1,0 +1,83 @@
+# Prometheus scrape config — Brikko production VPS.
+#
+# Цели:
+#   - prometheus сам себя (sanity)
+#   - node-exporter (host CPU/RAM/Disk/Net)
+#   - cAdvisor (per-container)
+#   - gateway /metrics (custom app metrics: voltari_*)
+#   - web /api/metrics (если нужно — Next.js без них пока, skip)
+#   - blackbox-exporter (опционально, проверка endpoint'ов)
+#
+# scrape_interval: 30s — баланс между resolution и storage. На MVP-объёмах
+# (≤100 RPS) даёт 90 GB tsdb за год → влезает в 5 GB cap retention.
+#
+# external_labels: добавляются ко всем метрикам, помогают разделять prod/staging
+# при едином Grafana stack'е (когда staging получит свой prometheus).
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    env: production
+    cluster: brikko-prod
+    region: ru-msk
+
+scrape_configs:
+  # ----- Self-scrape: проверка что prometheus жив -----
+  - job_name: prometheus
+    static_configs:
+      - targets: [prometheus:9090]
+
+  # ----- Host metrics (CPU/RAM/Disk/Net) -----
+  - job_name: node
+    static_configs:
+      - targets: [node-exporter:9100]
+        labels:
+          host: brikko-reg-msk
+
+  # ----- Per-container metrics -----
+  - job_name: cadvisor
+    static_configs:
+      - targets: [cadvisor:8080]
+        labels:
+          host: brikko-reg-msk
+
+  # ----- Gateway app metrics (voltari_http_*, voltari_provider_*, ...) -----
+  # Контейнер brikko-gateway exposes :8000 в backend-net. /metrics НЕ
+  # на CADDY-уровне — scrape'им напрямую внутри docker network.
+  - job_name: brikko-gateway
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: [gateway:8000]
+        labels:
+          service: gateway
+          host: brikko-reg-msk
+
+  # ----- Web app (Next.js) — если позже добавим /api/metrics -----
+  # Закомменчено пока: Next.js standalone не expose'ит prometheus
+  # endpoint by default. Добавим когда сделаем custom route.
+  # - job_name: brikko-web
+  #   metrics_path: /api/metrics
+  #   static_configs:
+  #     - targets: [web:3000]
+
+  # ----- Blackbox: probe brikko endpoints извне (требует blackbox-exporter) -----
+  # Пока коммент — blackbox-exporter добавим в compose отдельно если CEO
+  # подтвердит что нужен (UptimeRobot покрывает эту задачу извне).
+  # - job_name: blackbox
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx]
+  #   static_configs:
+  #     - targets:
+  #         - https://api.brikko.ru/healthz
+  #         - https://brikko.ru/
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: blackbox-exporter:9115

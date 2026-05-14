@@ -1,0 +1,199 @@
+# Monitoring stack для Brikko production VPS (Sprint 13.7, 2026-05-09).
+#
+# Что: добавляет к основному prod-stack'у:
+#   - node-exporter (CPU/RAM/Disk/Net)
+#   - cadvisor      (per-container metrics)
+#   - prometheus    (scrape + retention 15d)
+#   - grafana       (dashboards)
+#   - promtail      (Loki log forwarder, опционально через env)
+#
+# Запуск:
+#   cd /opt/brikko
+#   docker compose \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.monitoring.yml \
+#     --env-file .env \
+#     up -d
+#
+# Доступ:
+#   - Grafana: только через WireGuard (bind на 10.10.0.2:3001).
+#     URL: http://10.10.0.2:3001 с CEO-машины (10.10.0.3).
+#     Default admin: admin / change в .env GRAFANA_ADMIN_PASSWORD.
+#   - Prometheus / cAdvisor / node-exporter — только в backend-net,
+#     наружу не выставляются (доступ только через grafana data-source).
+#
+# Безопасность:
+#   - Все три внутренних сервиса (prometheus, cadvisor, node-exporter)
+#     bind'ятся на backend-net БЕЗ ports — только через docker DNS.
+#   - Grafana — единственный public-ish endpoint, bind на VPN-IP.
+#     При компрометации WireGuard CEO-ключа — атакующий получает Grafana,
+#     но не сами compute-сервисы.
+#
+# Resources:
+#   - Prometheus retention 15 дней → ~3 GB на disk при 30 RPS
+#   - Grafana ~256 MB RAM
+#   - Promtail ~64 MB RAM
+#
+# Если что-то не нужно: запускай compose без `-f monitoring.yml`.
+
+name: brikko
+
+networks:
+  frontend-net:
+    external: true
+    name: brikko_frontend-net
+  backend-net:
+    external: true
+    name: brikko_backend-net
+
+services:
+  # -------- Host metrics: CPU / RAM / Disk / Network --------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: brikko-node-exporter
+    restart: unless-stopped
+    command:
+      # /host/proc, /host/sys маунтятся read-only — single source of truth
+      # для real host-метрик (без docker-bridge IP).
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|cgroup2|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    networks: [backend-net]
+    pid: host
+    mem_limit: 128m
+    mem_reservation: 32m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # -------- Container metrics: per-container CPU / RAM / I/O / Net --------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: brikko-cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    networks: [backend-net]
+    mem_limit: 256m
+    mem_reservation: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # -------- Prometheus: scrape + 15-day retention --------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: brikko-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=5GB
+      - --web.enable-lifecycle
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data/prometheus:/prometheus
+    networks: [backend-net]
+    depends_on:
+      - node-exporter
+      - cadvisor
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Grafana: dashboards --------
+  # Bind на 10.10.0.2:3001 — это WireGuard IP main-VPS.
+  # CEO заходит с 10.10.0.3 (своя машина) на http://10.10.0.2:3001
+  # Если WG нет — host_ip="0.0.0.0" + строгий пароль (НЕ для prod).
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: brikko-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_BIND_IP:-10.10.0.2}:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?must be set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      # Защита от reverse-proxy header injection (CVE-2022-31097 классы).
+      GF_SECURITY_COOKIE_SECURE: "false"
+      GF_SECURITY_COOKIE_SAMESITE: "lax"
+      # Анализатор/feedback в Grafana отправляет данные наружу — отключаем.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [backend-net]
+    depends_on:
+      - prometheus
+    mem_limit: 384m
+    mem_reservation: 128m
+    cpus: 0.3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------- Promtail: log forwarder для Grafana Cloud Loki (опционально) --------
+  # Активируется только если LOKI_URL не пустой. Иначе skip — логи остаются
+  # в Docker JSON driver на VPS, доступны через `docker logs <container>`.
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: brikko-promtail
+    restart: unless-stopped
+    profiles: ["loki"]   # docker compose --profile loki up -d
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    environment:
+      LOKI_URL: ${LOKI_URL}
+      LOKI_TENANT_ID: ${LOKI_TENANT_ID}
+      LOKI_API_KEY: ${LOKI_API_KEY}
+      ENVIRONMENT: production
+      HOSTNAME: brikko-prod
+    volumes:
+      - ./loki/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./data/promtail:/tmp
+    networks: [backend-net]
+    mem_limit: 128m
+    mem_reservation: 32m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

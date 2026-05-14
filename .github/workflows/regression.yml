@@ -1,0 +1,169 @@
+name: Regression
+
+# Eженедельная регрессия на staging + gating-checks для release-веток.
+# Подробности — см. 02_Product/19_regression_ci_integration.md.
+#
+# Бюджет: ~15 мин wall-time за счёт параллельных jobs.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # каждый понедельник 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'staging | production-readonly'
+        required: true
+        default: 'staging'
+  pull_request:
+    branches: [release/*]
+
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BASE_URL: https://staging-api.brikko.ru
+  DASHBOARD_URL: https://staging-app.brikko.ru
+
+jobs:
+  smoke-extended:
+    name: Smoke (20 cases)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client jq openssl
+      - name: Run extended smoke
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          SMOKE_API_KEY: ${{ secrets.STAGING_SMOKE_KEY }}
+          SMOKE_ADMIN_TOKEN: ${{ secrets.STAGING_ADMIN_TOKEN }}
+          SMOKE_ACCOUNT_ID: ${{ secrets.STAGING_SMOKE_ACCOUNT_ID }}
+          SMOKE_DASHBOARD_URL: ${{ env.DASHBOARD_URL }}
+          SMOKE_DB_DSN: ${{ secrets.STAGING_DB_DSN }}
+          YOOKASSA_WEBHOOK_SECRET: ${{ secrets.YOOKASSA_WEBHOOK_SECRET_TEST }}
+          VOLTARI_REPO_ROOT: ${{ github.workspace }}
+        run: bash infra/scripts/smoke-extended.sh
+
+  api-pytest:
+    name: API regression (pytest)
+    runs-on: ubuntu-latest
+    needs: smoke-extended
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install -e apps/gateway[test]
+      - name: Run pytest regression markers
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          API_KEY: ${{ secrets.STAGING_REGRESSION_KEY }}
+        run: |
+          pytest apps/gateway/tests/regression/ -v \
+                 --junit-xml=regression-results.xml \
+                 -m 'regression and not slow'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-results
+          path: regression-results.xml
+
+  playwright-e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: smoke-extended
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - name: Install
+        run: cd apps/web && pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: cd apps/web && pnpm playwright install --with-deps chromium
+      - name: Run regression e2e
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ env.DASHBOARD_URL }}
+          STAGING_SEED_TOKEN: ${{ secrets.STAGING_SEED_TOKEN }}
+        run: cd apps/web && pnpm playwright test --project=chromium tests/e2e/regression/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+
+  load-baseline:
+    name: Load baseline (LT-1, soft gate)
+    runs-on: ubuntu-latest
+    needs: smoke-extended
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: k6 baseline
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          API_KEY: ${{ secrets.STAGING_LOAD_KEY }}
+        run: k6 run -e BASE_URL=$BASE_URL -e API_KEY=$API_KEY infra/load-tests/baseline.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-baseline-summary
+          path: baseline-summary.json
+
+  security-checks:
+    name: Security (gitleaks+trivy+pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit --strict -r apps/gateway/requirements.txt || exit 1
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [smoke-extended, api-pytest, playwright-e2e, load-baseline, security-checks]
+    if: always()
+    steps:
+      - name: Telegram on failure
+        if: contains(needs.*.result, 'failure')
+        run: |
+          MSG="Regression FAILED $(date -Iseconds). Run: ${{ github.run_id }}.%0AView: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TG_CHAT_ID }}" \
+            -d "text=$MSG" \
+            -d "parse_mode=HTML"
+      - name: Telegram on success
+        if: ${{ !contains(needs.*.result, 'failure') }}
+        run: |
+          MSG="Regression PASSED $(date -Iseconds). Run: ${{ github.run_id }}"
+          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TG_CHAT_ID }}" \
+            -d "text=$MSG"

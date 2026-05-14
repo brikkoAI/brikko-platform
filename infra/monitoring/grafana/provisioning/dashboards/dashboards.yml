@@ -1,0 +1,16 @@
+# Auto-load dashboards из /var/lib/grafana/dashboards.
+# Каждый JSON в той папке появится в UI.
+
+apiVersion: 1
+
+providers:
+  - name: brikko-dashboards
+    orgId: 1
+    folder: 'Brikko'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
