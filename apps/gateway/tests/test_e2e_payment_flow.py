@@ -65,11 +65,15 @@ WEBHOOK_SECRET = "e2e-webhook-secret-32-bytes-AAAAAAAAAAAAAAAAAA"
 # A password that satisfies the strong-password validator (>= 12 chars, mixed).
 TEST_PASSWORD = "correct horse battery staple"
 
-# Welcome bonus total:
-#   - 100 ₽ welcome_anonymize при signup (BRIEF_v2_pivot.md § 5, pay-per-use pivot)
-#   - 200 ₽ welcome (legacy gateway credit) при verify-email
-# = 300 ₽ = 30_000 kop total после verify.
-WELCOME_KOP = 30_000
+# Welcome bonus per BRIEF.md §7 = 200 ₽ = 20_000 kop. Это legacy gateway-credit
+# который начисляется при verify-email. /v1/auth/verify-email возвращает ровно
+# это значение в "welcome_credit_kop". WELCOME_KOP здесь = legacy-кредит только.
+WELCOME_KOP = 20_000
+
+# Welcome anonymize credit per BRIEF_v2_pivot.md § 5 = 100 ₽ = 10_000 kop.
+# Начисляется при signup (до verify-email). После verify общий balance =
+# WELCOME_KOP + WELCOME_ANONYMIZE_KOP = 30_000 kop.
+WELCOME_ANONYMIZE_KOP = 10_000
 
 # Top-up amount we drive through ЮKassa: 1500 ₽ = 150_000 kop.
 # Kept >1000 ₽ so the same fixture is reusable for АКТ tests later
@@ -295,7 +299,7 @@ async def test_e2e_first_paying_customer(
     await db.refresh(user_row)
     assert user_row.email_verified is True
     assert user_row.verification_token is None  # token consumed
-    assert account_row.balance_kopecks == WELCOME_KOP
+    assert account_row.balance_kopecks == WELCOME_KOP + WELCOME_ANONYMIZE_KOP
     welcome_log = (await db.execute(select(WelcomeCreditsLog))).scalar_one_or_none()
     assert welcome_log is not None
     welcome_tx = (
@@ -384,7 +388,7 @@ async def test_e2e_first_paying_customer(
 
     # Balance after = welcome + topup.
     await db.refresh(account_row)
-    expected_after_topup = WELCOME_KOP + TOPUP_KOP  # 20_000 + 150_000 = 170_000
+    expected_after_topup = WELCOME_KOP + WELCOME_ANONYMIZE_KOP + TOPUP_KOP  # 20_000 + 10_000 + 150_000 = 180_000
     assert account_row.balance_kopecks == expected_after_topup
 
     # Topup transaction row.
