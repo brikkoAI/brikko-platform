@@ -258,14 +258,17 @@ async def test_e2e_first_paying_customer(
     assert signup_body["verification_required"] is True
     user_id = uuid.UUID(signup_body["user_id"])
 
-    # User row exists, NOT yet verified, no welcome credit yet.
+    # User row exists, NOT yet verified.
+    # Welcome 100 ₽ anonymize-credit (BRIEF_v2_pivot.md § 5 — pay-per-use)
+    # начисляется при signup, до verify-email. Welcome 200 ₽ gateway-credit
+    # начисляется при verify-email (legacy, для /v1/chat/completions).
     user_row = (await db.execute(select(User).where(User.id == user_id))).scalar_one()
     assert user_row.email_verified is False
     assert user_row.verification_token is not None
     account_row = (
         await db.execute(select(Account).where(Account.owner_id == user_id))
     ).scalar_one()
-    assert account_row.balance_kopecks == 0
+    assert account_row.balance_kopecks == 10_000  # welcome_anonymize 100 ₽
     assert account_row.tariff == Tariff.PAYG
 
     # Verification email captured.
