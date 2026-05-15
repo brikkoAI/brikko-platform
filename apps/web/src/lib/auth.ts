@@ -294,6 +294,34 @@ export function useTopup() {
   });
 }
 
+/**
+ * Card-linking flow (CEO 2026-05-15). Создаёт verification-платёж 1 ₽ через
+ * ЮKassa и отдаёт `confirmation_url` — фронт делает редирект, после возврата
+ * backend сохраняет payment_method_id + начисляет +100 ₽ welcome credit.
+ */
+export function useLinkCard() {
+  return useMutation<
+    { payment_id: string; confirmation_url: string },
+    ApiClientError,
+    { return_url: string }
+  >({
+    mutationFn: (payload) => billingApi.linkCard(payload),
+  });
+}
+
+export function useUnlinkCard() {
+  const qc = useQueryClient();
+  return useMutation<{ ok: true }, ApiClientError, void>({
+    mutationFn: () => billingApi.unlinkCard(),
+    onSuccess: () => {
+      // account — источник истины по autorefill_pm_id; balance может измениться
+      // если backend откатывает welcome-bonus при unlink (политика на бэке).
+      void qc.invalidateQueries({ queryKey: ['account'] });
+      void qc.invalidateQueries({ queryKey: ['billing', 'balance'] });
+    },
+  });
+}
+
 // ============================================================
 // Team
 // ============================================================

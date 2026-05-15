@@ -25,6 +25,7 @@ export type AnalyticsEvent =
   | 'key_created'
   | 'first_request_made'
   | 'topup_completed'
+  | 'card_linked'
   | 'playground_used'
   | 'playground_signup_cta_clicked'
   | 'playground_limit_hit';

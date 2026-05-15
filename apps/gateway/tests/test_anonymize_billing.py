@@ -159,11 +159,14 @@ async def test_zero_balance_returns_402(client, api_key_fixture, session_factory
         json={"text": "ИНН 7707083893"},
         headers=api_key_fixture.auth_header,
     )
+    # Pivot 2026-05-15 (BRIEF_v2_pivot.md): 402 message swap
+    # quota_exceeded/"Top up" → subscription_required/"Subscribe to Pro/Team".
+    # The old top-up path is gone — PAYG = welcome credits only.
     assert r.status_code == 402, r.text
     body = r.json()
-    assert body["error"] == "quota_exceeded"
-    assert "brikko.ru/app/billing" in body["topup_url"]
-    assert "Top up" in body["message"]
+    assert body["error"] == "subscription_required"
+    assert "brikko.ru/app/billing" in body["subscribe_url"]
+    assert "Subscribe to Pro" in body["message"]
 
     # Balance untouched (no debit even attempted past the InsufficientBalance
     # error inside check_and_charge_anonymize).

@@ -345,6 +345,32 @@ class Account(Base, TimestampMixin):
     autorefill_threshold_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     autorefill_topup_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # --- Subscription state (Sprint pay-per-use → subscription pivot, 2026-05-15) ---
+    # CEO 2026-05-15: PAYG = welcome credits only (200 ₽), top-ups больше нет.
+    # Единственный путь к paid usage — подписка Pro (290 ₽/мес) или Team
+    # (1490 ₽/мес). Этот блок колонок ортогонален ``tariff`` (legacy PAYG/
+    # PRO_PRIVACY и пр.) — он управляет именно subscription-биллингом, а не
+    # entitlement-флагами как pii_masking_enabled. См. BRIEF_v2_pivot.md.
+    #
+    # Жизненный цикл:
+    #   tier='payg'   active_until=NULL  canceled_at=NULL   ← новый аккаунт
+    #   tier='pro'    active_until=now+30d  canceled_at=NULL ← оплачено
+    #   tier='pro'    active_until=now+15d  canceled_at=set  ← cancel'нул, доедает
+    #   tier='payg'   active_until=NULL  canceled_at=NULL   ← cron заэкспайрил
+    subscription_tier: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="payg", server_default="payg"
+    )
+    # NULL = нет активной подписки (только welcome-кредиты доступны).
+    # datetime = paid until this moment (cron Phase 2 будет charge'ить заново).
+    subscription_active_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Заполняется при cancel. Сама подписка остаётся активной до
+    # ``subscription_active_until`` — юзер уже заплатил за период.
+    subscription_canceled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # --- Acquisition / UTM (Sprint 11, Alembic 0013) ---
     # Free-form acquisition channel ("habr", "vc", "tg_org", "direct", ...).
     # Frontend resolves cookies → channel → posts in the signup body.

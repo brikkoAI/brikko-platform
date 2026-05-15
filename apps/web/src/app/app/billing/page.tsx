@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
 import { Card, CardDescription, CardTitle } from '@/components/ui/card';
 import { HelperTooltip } from '@/components/ui/helper-tooltip';
@@ -10,6 +10,7 @@ import { TopupCard } from '@/components/dashboard/TopupCard';
 import { TransactionsTable } from '@/components/dashboard/TransactionsTable';
 import { PeriodDocuments } from '@/components/dashboard/PeriodDocuments';
 import { AutoRefillCard } from '@/components/dashboard/settings/AutoRefillCard';
+import { CardLinkCard } from '@/components/dashboard/CardLinkCard';
 import { useBalance, useTransactions } from '@/lib/auth';
 import { formatKopecks } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
@@ -19,6 +20,7 @@ function BillingContent() {
   const balance = useBalance();
   const tx = useTransactions({ limit: 50 });
   const params = useSearchParams();
+  const router = useRouter();
 
   useEffect(() => {
     if (params.get('topup') === 'success') {
@@ -27,6 +29,18 @@ function BillingContent() {
       track('topup_completed', { amount: amount ?? 'unknown' });
     }
   }, [params]);
+
+  // Subscription pivot (CEO 2026-05-15): когда юзер пришёл с landing /pricing
+  // через signup?tier=pro|team, verify-email редиректит сюда с
+  // ?action=subscribe&tier=<…>. Мы немедленно отправляем его в /upgrade —
+  // там полноценный flow с подтверждением. Делаем replace, чтобы Back-кнопка
+  // не возвращала пустую subscribe-карусель.
+  useEffect(() => {
+    if (params.get('action') !== 'subscribe') return;
+    const tier = params.get('tier');
+    if (tier !== 'pro' && tier !== 'team') return;
+    router.replace(`/app/billing/upgrade?tier=${tier}`);
+  }, [params, router]);
 
   /**
    * Sprint 12 §4 — welcome-бонус 200 ₽ badge.
@@ -95,6 +109,8 @@ function BillingContent() {
           <TopupCard />
         </div>
       </div>
+
+      <CardLinkCard />
 
       <AutoRefillCard />
 

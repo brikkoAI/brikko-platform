@@ -300,6 +300,62 @@ class YooKassaClient:
         body: dict[str, Any] = resp.json()
         return body
 
+    async def refund_payment(
+        self,
+        *,
+        payment_id: str,
+        amount_kopecks: int,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Refund a previously captured payment.
+
+        Used by the card-link verification flow: ЮKassa charges 1 ₽ to
+        verify the card + save the ``payment_method.id``; the gateway then
+        immediately refunds the 1 ₽ so the user is not net-out of pocket.
+
+        Idempotence-Key prevents double-refund on a transient retry.
+        ЮKassa also enforces "amount ≤ original payment amount" — passing
+        a bigger refund value gets a 400.
+
+        Returns the raw ЮKassa refund object (id, status, amount, etc.).
+        Caller can persist ``id`` for the resulting ``refund.succeeded``
+        webhook reconciliation.
+        """
+        if amount_kopecks <= 0:
+            raise YooKassaError("amount_kopecks must be positive")
+
+        amount_rub = f"{amount_kopecks / 100:.2f}"
+        body: dict[str, Any] = {
+            "payment_id": payment_id,
+            "amount": {"value": amount_rub, "currency": "RUB"},
+        }
+        if description:
+            body["description"] = description[:128]
+        if metadata:
+            body["metadata"] = metadata
+        idem_key = uuid.uuid4().hex
+        try:
+            resp = await self._http.post(
+                "/refunds",
+                json=body,
+                headers={"Idempotence-Key": idem_key},
+            )
+        except httpx.HTTPError as exc:
+            raise YooKassaError(f"yookassa_unreachable: {exc}") from exc
+
+        if resp.status_code >= 400:
+            log.warning(
+                "yookassa_refund_failed",
+                payment_id=payment_id,
+                status=resp.status_code,
+                body=resp.text[:500],
+            )
+            raise YooKassaError(f"yookassa_refund_status_{resp.status_code}: {resp.text[:200]}")
+
+        data: dict[str, Any] = resp.json()
+        return data
+
 
 # ---------- webhook --------------------------------------------------------
 

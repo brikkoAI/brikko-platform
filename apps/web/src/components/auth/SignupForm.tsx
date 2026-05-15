@@ -1,14 +1,35 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useSignup } from '@/lib/auth';
 import { ApiClientError } from '@/lib/api';
 import { toast } from '@/components/ui/toast';
+
+/**
+ * Tier query handling (CEO 2026-05-15, subscription pivot).
+ *
+ * Когда юзер пришёл с landing-pricing (/signup?tier=pro|team), мы:
+ *   1. Стэшим выбранный tier в sessionStorage — переживёт click на verify-email
+ *      ссылку из почты (новая вкладка) или back-forward.
+ *   2. После успешной верификации email VerifyEmailPage прочитает stash и
+ *      сделает redirect на /app/billing?action=subscribe&tier=<tier>
+ *      вместо дефолтного /app.
+ *
+ * Whitelist tier-значений — защита от open-redirect-подобных манипуляций.
+ */
+const TIER_STORAGE_KEY = 'brikko.signup_intent_tier';
+const ALLOWED_TIERS = ['pro', 'team'] as const;
+type AllowedTier = (typeof ALLOWED_TIERS)[number];
+
+function isAllowedTier(value: string | null): value is AllowedTier {
+  return value !== null && (ALLOWED_TIERS as readonly string[]).includes(value);
+}
 
 export const signupSchema = z.object({
   email: z.string().min(1, 'Введи email').email('Проверь формат email'),
@@ -29,7 +50,22 @@ export type SignupFormValues = z.infer<typeof signupSchema>;
  */
 export function SignupForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const signup = useSignup();
+
+  // Stash signup intent (Pro/Team) сразу при mount — даже если юзер уйдёт на
+  // OAuth-redirect и вернётся, sessionStorage переживёт (same-tab).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const tier = searchParams.get('tier');
+    try {
+      if (isAllowedTier(tier)) {
+        window.sessionStorage.setItem(TIER_STORAGE_KEY, tier);
+      }
+    } catch {
+      // privacy mode — fallback на /app, юзер сам ткнёт «Оформить Pro» в дашборде.
+    }
+  }, [searchParams]);
 
   const {
     register,

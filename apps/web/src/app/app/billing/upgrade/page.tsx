@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,8 +27,23 @@ import type { Kopecks, TariffChangeResponse, TariffSlug } from '@/lib/types';
  *    что у них нет self-serve checkout.
  */
 
-export default function UpgradeTariffPage() {
+/**
+ * Landing-tier → catalog-slug mapping (CEO 2026-05-15).
+ *
+ * Лендинг знает только 2 публичных tier: `pro` (290 ₽) и `team` (1490 ₽).
+ * Внутренний каталог /upgrade сложнее (PAYG / Pro Features / Pro Privacy / Team / Custom).
+ * Когда юзер пришёл с landing?tier=pro — мы открываем confirm-модалку для
+ * Pro Features (commodity-Pro, не Privacy). Pro Privacy продаём как upsell
+ * с PII-маскингом внутри дашборда отдельно.
+ */
+const LANDING_TIER_TO_SLUG: Record<'pro' | 'team', TariffSlug> = {
+  pro: 'pro_features',
+  team: 'team',
+};
+
+function UpgradeTariffContent() {
   const router = useRouter();
+  const params = useSearchParams();
   const account = useAccount();
   const balance = useBalance();
   const [selected, setSelected] = useState<TariffCardData | null>(null);
@@ -36,6 +51,22 @@ export default function UpgradeTariffPage() {
 
   const currentTariff = (account.data?.tariff ?? null) as TariffSlug | null;
   const balanceKopecks = (balance.data?.balance_kopecks ?? 0) as Kopecks;
+
+  // Auto-open confirm-модалку если пришли с landing?tier=pro|team
+  // (через verify-email → /billing?action=subscribe → /upgrade?tier=…).
+  // Идемпотентность через ref — устойчивость к React StrictMode double-mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (autoOpened.current) return;
+    const tier = params.get('tier');
+    if (tier !== 'pro' && tier !== 'team') return;
+    const slug = LANDING_TIER_TO_SLUG[tier];
+    const data = TARIFF_CATALOG.find((t) => t.slug === slug);
+    if (!data) return;
+    autoOpened.current = true;
+    setSelected(data);
+    setOpen(true);
+  }, [params]);
 
   function handleSelect(slug: TariffSlug) {
     const data = TARIFF_CATALOG.find((t) => t.slug === slug);
@@ -122,5 +153,27 @@ export default function UpgradeTariffPage() {
         onSuccess={handleSuccess}
       />
     </div>
+  );
+}
+
+export default function UpgradeTariffPage() {
+  // Suspense обязателен для useSearchParams в Next.js App Router (build-time
+  // bailout без него). Skeleton-fallback укладывается в одну row, чтобы не
+  // прыгал layout при гидрации.
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto flex max-w-6xl flex-col gap-6">
+          <Skeleton className="h-12 w-1/2" />
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-80 w-full" />
+            ))}
+          </div>
+        </div>
+      }
+    >
+      <UpgradeTariffContent />
+    </Suspense>
   );
 }

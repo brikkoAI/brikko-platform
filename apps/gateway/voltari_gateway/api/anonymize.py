@@ -31,15 +31,22 @@ Contract
 
 Auth: Bearer API key (sk-brk-...) — same surface as /v1/chat/completions.
 
-Billing (V2 pivot, BRIEF_v2_pivot.md, CEO 2026-05-14)
------------------------------------------------------
+Billing (V2 → subscription pivot, CEO 2026-05-15)
+-------------------------------------------------
 
-Pay-per-use: **100 запросов в день бесплатно** (reset 00:00 МСК), затем
-**0.02 ₽ / запрос** списываются с депозита. Welcome-кредит для новых
-аккаунтов — 100 ₽ (= 5000 платных вызовов), начисляется в signup-flow
-отдельной transaction с meta.kind == "welcome_anonymize". При нулевом
-балансе после исчерпания дневной квоты — 402 Payment Required с указателем
-на ``brikko.ru/app/billing``.
+Two paths:
+
+1. **Active subscription** (Pro 290 ₽/мес или Team 1490 ₽/мес) —
+   unlimited /v1/anonymize, no daily quota, no per-request charge. The
+   gate just checks ``account.subscription_tier in ("pro","team")`` AND
+   ``subscription_active_until > now()`` and proceeds.
+
+2. **PAYG (welcome credits only)** — 100 free requests/day from the daily
+   counter, then 0.02 ₽/request from the welcome balance (200 ₽ total:
+   100 ₽ at signup + 100 ₽ when the card is linked, see ``billing.card_link``).
+   When the welcome balance is gone → 402 ``subscription_required`` with
+   pointer to ``brikko.ru/app/billing``. Top-ups in rubles for PAYG **no
+   longer exist** — the only paid path is a subscription.
 
 ``/v1/restore`` намеренно **БЕСПЛАТНО** и не считается в дневной квоте:
 клиент уже заплатил за маскинг при создании mapping_id, restore — просто
@@ -66,6 +73,8 @@ from voltari_gateway.billing.anonymize_billing import (
     TOPUP_URL,
     check_and_charge_anonymize,
 )
+from voltari_gateway.billing.subscription import is_subscription_active
+from voltari_gateway.db.models import Account
 from voltari_gateway.db.session import get_db
 from voltari_gateway.pii import (
     PiiMapping,
@@ -158,34 +167,50 @@ async def anonymize(
             detail="Mapping store temporarily unavailable. Try again in a moment.",
         )
 
-    # --- Billing gate (V2 pivot) -------------------------------------------
-    # Free 100/day → 0.02 ₽ from balance → 402 with topup hint. The debit
-    # (if any) lands inside our caller-commit AsyncSession; we commit it
-    # explicitly below before sending the response so the client never
-    # sees a "charged but no mapping" outcome under a server crash.
-    allowed, reject_reason = await check_and_charge_anonymize(
-        account_id=principal.account_id,
-        redis=redis,
-        db=db,
-    )
-    if not allowed:
-        if reject_reason == REJECT_QUOTA_EXCEEDED:
+    # --- Billing gate (V2 → subscription pivot, CEO 2026-05-15) ------------
+    # Two gates, evaluated in order:
+    #
+    # 1. Active subscription (Pro/Team) → unlimited, skip billing entirely.
+    #    Subscription = paid-monthly access; no per-request charge, no
+    #    daily counter. Phase 2 cron will renew at ``active_until``.
+    #
+    # 2. Otherwise, fall through to PAYG: free 100/day → 0.02 ₽ from
+    #    balance → 402 "Subscribe to Pro/Team" when exhausted. PAYG is
+    #    welcome-credits-only now — once those 200 ₽ are spent the only
+    #    path forward is a subscription.
+    account = await db.get(Account, principal.account_id)
+    if account is not None and is_subscription_active(account):
+        log.info(
+            "anonymize_subscription_bypass",
+            account_id=str(principal.account_id),
+            tier=account.subscription_tier,
+        )
+    else:
+        allowed, reject_reason = await check_and_charge_anonymize(
+            account_id=principal.account_id,
+            redis=redis,
+            db=db,
+        )
+        if not allowed:
+            if reject_reason == REJECT_QUOTA_EXCEEDED:
+                return JSONResponse(
+                    status_code=402,
+                    content={
+                        "error": "subscription_required",
+                        "message": (
+                            "Trial credit exhausted. Subscribe to Pro or Team to continue."
+                        ),
+                        "subscribe_url": TOPUP_URL,
+                    },
+                )
+            if reject_reason == REJECT_ACCOUNT_NOT_FOUND:
+                # Should not happen — require_api_key resolved the account row.
+                raise HTTPException(status_code=401, detail="Account not found.")
+            # Future reject reasons → generic 402.
             return JSONResponse(
                 status_code=402,
-                content={
-                    "error": "quota_exceeded",
-                    "message": (f"Free quota 100/day exhausted. Top up at {TOPUP_URL}"),
-                    "topup_url": TOPUP_URL,
-                },
+                content={"error": reject_reason or "billing_error"},
             )
-        if reject_reason == REJECT_ACCOUNT_NOT_FOUND:
-            # Should not happen — require_api_key resolved the account row.
-            raise HTTPException(status_code=401, detail="Account not found.")
-        # Future reject reasons → generic 402.
-        return JSONResponse(
-            status_code=402,
-            content={"error": reject_reason or "billing_error"},
-        )
 
     mapping = PiiMapping()
     masked = mask_text(body.text, mapping)

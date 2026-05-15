@@ -34,6 +34,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from voltari_gateway.auth.audit import write_audit
 from voltari_gateway.auth.middleware import Principal, require_api_key_or_session
+from voltari_gateway.auth.session_middleware import SessionPrincipal, require_session
+from voltari_gateway.billing.card_link import (
+    CARD_LINK_PURPOSE,
+    CARD_LINK_VERIFY_AMOUNT_KOPECKS,
+    credit_card_link_welcome,
+    has_card_already_linked,
+    has_received_card_link_welcome,
+)
 from voltari_gateway.billing.documents import (
     AKT_MIN_AMOUNT_KOPECKS,
     UPD_MIN_AMOUNT_KOPECKS,
@@ -49,6 +57,12 @@ from voltari_gateway.billing.engine import (
     refund_account,
 )
 from voltari_gateway.billing.receipts import ReceiptIssued, issue_payg_receipt
+from voltari_gateway.billing.subscription import (
+    PAID_TIERS,
+    activate_subscription,
+    cancel_subscription,
+    price_for_tier,
+)
 from voltari_gateway.billing.yookassa import (
     WebhookResult,
     YooKassaClient,
@@ -140,6 +154,57 @@ class AutorefillRequest(BaseModel):
     payment_method_id: str = Field(min_length=8, max_length=128)
     threshold_kopecks: int = Field(ge=100, le=1_000_000_00)
     topup_kopecks: int = Field(ge=100, le=10_000_000_00)
+
+
+# ---------- card link + subscription (Pivot 2026-05-15) ----------------------
+
+
+class LinkCardRequest(BaseModel):
+    """Initiate the card-link verification flow.
+
+    The frontend POSTs this, gets a ``confirmation_url``, redirects the
+    user to ЮKassa. ЮKassa captures 1 ₽ → calls our webhook → we save
+    ``payment_method_id``, refund the 1 ₽, and credit 100 ₽ welcome.
+    """
+
+    return_url: str | None = Field(
+        default=None,
+        description=(
+            "Where ЮKassa redirects the user after they complete the 1 ₽ "
+            "verification. Falls back to a brikko.ru/app/billing default."
+        ),
+        max_length=512,
+    )
+
+    model_config = {"extra": "ignore"}
+
+
+class LinkCardResponse(BaseModel):
+    confirmation_url: str
+    payment_id: str
+
+
+class SubscribeRequest(BaseModel):
+    tier: Literal["pro", "team"]
+
+    model_config = {"extra": "ignore"}
+
+
+class SubscribeResponse(BaseModel):
+    """202 Accepted — the actual activation happens in the webhook handler."""
+
+    status: Literal["pending"]
+    payment_id: str
+    tier: str
+    amount_kopecks: int
+
+
+class SubscriptionResponse(BaseModel):
+    tier: str
+    active_until: datetime | None
+    canceled_at: datetime | None
+    card_linked: bool
+    card_last4: str | None
 
 
 class ReceiptResponse(BaseModel):
@@ -765,10 +830,31 @@ async def _handle_payment_succeeded(
 ) -> JSONResponse:
     """Credit + receipt issuance for ``payment.succeeded`` events.
 
+    Dispatches on ``metadata.purpose``:
+
+      * ``"card_link_verification"`` — special flow: refund the 1 ₽ via
+        ЮKassa, save ``payment_method.id``, credit 100 ₽ welcome. Does
+        NOT add the 1 ₽ to balance (it's refunded).
+      * ``"subscription_charge"`` — set ``subscription_tier`` + extend
+        ``subscription_active_until`` by 30d. Does NOT credit the 290/1490
+        to the balance (it's a subscription payment, not a topup).
+      * default — legacy topup behaviour. Credits the full amount.
+
     Returns 500 (retryable) on any BillingError so ЮKassa retries; the
     DLQ row is written on a fresh session because the credit transaction
     has been rolled back.
     """
+    purpose = parsed.metadata.get("purpose") if parsed.metadata else None
+
+    if purpose == CARD_LINK_PURPOSE:
+        return await _handle_card_link_succeeded(
+            request, db, account_id=account_id, parsed=parsed
+        )
+    if purpose == "subscription_charge":
+        return await _handle_subscription_succeeded(
+            db, account_id=account_id, parsed=parsed
+        )
+
     try:
         tx = await credit_account(
             db,
@@ -869,7 +955,29 @@ async def _handle_refund_succeeded(
     account_id: uuid.UUID,
     parsed: WebhookResult,
 ) -> JSONResponse:
-    """Refund handler. Same DLQ semantics as payment_succeeded."""
+    """Refund handler. Same DLQ semantics as payment_succeeded.
+
+    Special case: refunds whose ``metadata.purpose == "card_link_verification"``
+    are NOT debited from the balance — the 1 ₽ verification charge was never
+    credited (the original ``payment.succeeded`` handler short-circuited
+    into the card-link flow). We still mark the webhook processed so a
+    replayed refund.succeeded doesn't re-enter dispatch.
+    """
+    purpose = parsed.metadata.get("purpose") if parsed.metadata else None
+    if purpose == CARD_LINK_PURPOSE:
+        log.info(
+            "yookassa_refund_card_link_ack",
+            payment_id=parsed.payment_id,
+            account_id=str(account_id),
+        )
+        await _record_webhook_outcome(
+            db,
+            payment_id=parsed.payment_id,
+            event=parsed.event,
+            status="processed",
+        )
+        return JSONResponse({"status": "ok"}, status_code=200)
+
     try:
         await refund_account(
             db,
@@ -901,6 +1009,193 @@ async def _handle_refund_succeeded(
         status="processed",
     )
     return JSONResponse({"status": "ok"}, status_code=200)
+
+
+# ---------- card link + subscription webhook handlers ------------------------
+
+
+async def _handle_card_link_succeeded(
+    request: Request,
+    db: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    parsed: WebhookResult,
+) -> JSONResponse:
+    """``payment.succeeded`` for a 1 ₽ card-link verification charge.
+
+    Steps:
+      1. Refund the 1 ₽ via ЮKassa REST. Best-effort — if the refund fails
+         we still save the pm_id and credit welcome (user is out 1 ₽; ops
+         can manually refund). Logged with ``card_link_refund_failed``.
+      2. Save ``payment_method.id`` to ``account.autorefill_pm_id``.
+      3. Credit the 100 ₽ welcome bonus (idempotent on ref_id).
+      4. Mark the webhook processed.
+
+    All three side effects land in one DB transaction. If any fails, we
+    rollback and ask ЮKassa to retry — autorefill_pm_id is empty so a
+    subsequent attempt is fine.
+    """
+    yk: YooKassaClient = request.app.state.yookassa
+
+    # 1) Refund the 1 ₽. Use our internal ref_id so a replayed webhook
+    #    that already triggered a refund doesn't double-call ЮKassa
+    #    (their /refunds endpoint is idempotent on Idempotence-Key, but
+    #    we'd still burn a network round-trip).
+    try:
+        await yk.refund_payment(
+            payment_id=parsed.payment_id,
+            amount_kopecks=parsed.amount_kopecks,
+            description="Brikko card-link verify refund",
+            metadata={
+                "purpose": CARD_LINK_PURPOSE,
+                "account_id": str(account_id),
+                "original_payment_id": parsed.payment_id,
+            },
+        )
+    except YooKassaError as exc:
+        # Soft-fail: log + continue. The pm_id save is still valuable.
+        # Ops can manually refund the 1 ₽ if it doesn't auto-clear.
+        log.warning(
+            "card_link_refund_failed",
+            payment_id=parsed.payment_id,
+            account_id=str(account_id),
+            error=str(exc),
+        )
+
+    # 2-3) Save pm_id + credit welcome.
+    if not parsed.payment_method_id:
+        await db.rollback()
+        await _record_webhook_outcome(
+            db,
+            payment_id=parsed.payment_id,
+            event=parsed.event,
+            status="failed",
+            error_message="card_link_missing_payment_method_id",
+        )
+        log.error(
+            "card_link_no_pm_id",
+            payment_id=parsed.payment_id,
+            account_id=str(account_id),
+        )
+        return _server_error(
+            "Card-link webhook missing payment_method.id",
+            code="card_link_no_pm_id",
+        )
+
+    try:
+        granted, new_balance = await credit_card_link_welcome(
+            db,
+            account_id=account_id,
+            payment_method_id=parsed.payment_method_id,
+        )
+        await db.commit()
+    except Exception as exc:  # DLQ + retry — catch-broad is intentional
+        await db.rollback()
+        await _record_webhook_outcome(
+            db,
+            payment_id=parsed.payment_id,
+            event=parsed.event,
+            status="failed",
+            error_message=f"card_link_credit_failed: {exc}"[:1024],
+        )
+        log.exception(
+            "card_link_credit_failed",
+            payment_id=parsed.payment_id,
+            account_id=str(account_id),
+        )
+        return _server_error(str(exc), code="card_link_credit_failed")
+
+    await _record_webhook_outcome(
+        db,
+        payment_id=parsed.payment_id,
+        event=parsed.event,
+        status="processed",
+    )
+    log.info(
+        "card_link_succeeded",
+        payment_id=parsed.payment_id,
+        account_id=str(account_id),
+        welcome_granted=granted,
+        new_balance_kopecks=new_balance,
+    )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "welcome_granted": granted,
+        },
+        status_code=200,
+    )
+
+
+async def _handle_subscription_succeeded(
+    db: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    parsed: WebhookResult,
+) -> JSONResponse:
+    """``payment.succeeded`` for a Pro/Team subscription charge.
+
+    Activates the tier (+30d active_until). Does NOT credit the 290/1490
+    to the cash balance — subscription is an entitlement, not a topup.
+    """
+    tier = parsed.metadata.get("tier") if parsed.metadata else None
+    if tier not in PAID_TIERS:
+        await db.rollback()
+        await _record_webhook_outcome(
+            db,
+            payment_id=parsed.payment_id,
+            event=parsed.event,
+            status="failed",
+            error_message=f"subscription_bad_tier: {tier!r}",
+        )
+        log.error(
+            "subscription_webhook_bad_tier",
+            payment_id=parsed.payment_id,
+            tier=tier,
+        )
+        return _server_error(
+            f"Subscription webhook metadata has bad tier {tier!r}",
+            code="subscription_bad_tier",
+        )
+
+    try:
+        activated = await activate_subscription(
+            db,
+            account_id=account_id,
+            tier=tier,
+            payment_id=parsed.payment_id,
+        )
+        await db.commit()
+    except Exception as exc:  # DLQ + retry — catch-broad is intentional
+        await db.rollback()
+        await _record_webhook_outcome(
+            db,
+            payment_id=parsed.payment_id,
+            event=parsed.event,
+            status="failed",
+            error_message=f"subscription_activate_failed: {exc}"[:1024],
+        )
+        log.exception(
+            "subscription_activate_failed",
+            payment_id=parsed.payment_id,
+            account_id=str(account_id),
+        )
+        return _server_error(str(exc), code="subscription_activate_failed")
+
+    await _record_webhook_outcome(
+        db,
+        payment_id=parsed.payment_id,
+        event=parsed.event,
+        status="processed",
+    )
+    log.info(
+        "subscription_webhook_succeeded",
+        payment_id=parsed.payment_id,
+        account_id=str(account_id),
+        tier=tier,
+        activated=activated,
+    )
+    return JSONResponse({"status": "ok", "activated": activated, "tier": tier}, status_code=200)
 
 
 # ---------- autorefill --------------------------------------------------------
@@ -1265,4 +1560,234 @@ async def get_period_upd(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ============================================================================
+# Card linking + subscription (Phase 1, Pivot 2026-05-15)
+# ============================================================================
+#
+# The three endpoints below all use ``require_session`` (cookie auth), NOT
+# ``require_api_key_or_session``. Rationale: linking a card and changing
+# subscription state are dashboard-level actions; an API-key holder who
+# wandered into these would be a UX bug (and a security one — a stolen
+# key should not be able to swap the saved card). The session cookie is
+# also bound to the CSRF double-submit pair via ``require_session``.
+
+
+_DEFAULT_BILLING_RETURN_URL = "https://brikko.ru/app/billing"
+
+
+@router.post(
+    "/link-card",
+    response_model=LinkCardResponse,
+    summary="Initiate card-link verification (1 ₽ → refund → save pm_id + 100 ₽ welcome)",
+    description=(
+        "Creates a 1 ₽ ЮKassa payment with ``save_payment_method=true`` "
+        "and returns the confirmation URL. After the user confirms, ЮKassa "
+        "calls our webhook; the handler refunds the 1 ₽, saves the "
+        "``payment_method.id`` to ``account.autorefill_pm_id``, and "
+        "credits the 100 ₽ card-link welcome bonus. **Idempotent guard:** "
+        "rejects with 400 ``card_already_linked`` if the account already "
+        "has a saved card, and 400 ``welcome_card_link_already_granted`` if "
+        "the welcome bonus has been redeemed before (defence against "
+        "remove-and-re-link)."
+    ),
+    responses={
+        200: {"description": "Returns confirmation_url for ЮKassa redirect."},
+        400: {"description": "Card already linked or welcome bonus already granted."},
+        502: {"description": "ЮKassa error during payment creation."},
+    },
+)
+async def link_card(
+    body: LinkCardRequest,
+    principal: Annotated[SessionPrincipal, Depends(require_session)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    yookassa: Annotated[YooKassaClient, Depends(get_yookassa)],
+) -> LinkCardResponse:
+    account = principal.account
+    if await has_card_already_linked(db, account):
+        raise invalid_request(
+            "A card is already linked to this account. Remove it first to link a new one.",
+            param="autorefill_pm_id",
+            code="card_already_linked",
+        )
+    if await has_received_card_link_welcome(db, account.id):
+        # The user previously linked a card, claimed the welcome, then
+        # removed it. Re-linking is fine for autorefill, but the bonus
+        # is one-time per account.
+        raise invalid_request(
+            "Card-link welcome bonus has already been granted on this account.",
+            param="account_id",
+            code="welcome_card_link_already_granted",
+        )
+
+    try:
+        result = await yookassa.create_payment(
+            account_id=account.id,
+            amount_kopecks=CARD_LINK_VERIFY_AMOUNT_KOPECKS,
+            description="Brikko card-link verification (1 ₽, will be refunded)",
+            return_url=body.return_url or _DEFAULT_BILLING_RETURN_URL,
+            save_payment_method=True,
+            metadata={
+                "account_id": str(account.id),
+                "purpose": CARD_LINK_PURPOSE,
+            },
+        )
+    except YooKassaError as exc:
+        log.warning(
+            "card_link_yookassa_create_failed",
+            account_id=str(account.id),
+            error=str(exc),
+        )
+        raise upstream_error("Could not initiate card link with the bank gateway.") from exc
+
+    log.info(
+        "card_link_payment_created",
+        account_id=str(account.id),
+        payment_id=result.payment_id,
+    )
+    return LinkCardResponse(
+        confirmation_url=result.confirmation_url,
+        payment_id=result.payment_id,
+    )
+
+
+@router.post(
+    "/subscribe",
+    response_model=SubscribeResponse,
+    status_code=202,
+    summary="Charge the linked card for a Pro/Team monthly subscription",
+    description=(
+        "Charges the saved card via ЮKassa recurring API and returns "
+        "**202 Accepted** — the actual tier activation happens in the "
+        "webhook handler (``payment.succeeded`` with "
+        "``metadata.purpose=subscription_charge``). The frontend should "
+        "poll ``GET /v1/billing/subscription`` or wait for an SSE event "
+        "(Phase 2) to confirm activation.\n\n"
+        "Requires a previously-linked card (``autorefill_pm_id != NULL``). "
+        "Returns 412 ``card_not_linked`` otherwise."
+    ),
+    responses={
+        202: {"description": "Charge initiated; activation pending webhook."},
+        412: {"description": "No card linked. Call /v1/billing/link-card first."},
+        502: {"description": "ЮKassa error during charge creation."},
+    },
+)
+async def subscribe(
+    body: SubscribeRequest,
+    principal: Annotated[SessionPrincipal, Depends(require_session)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    yookassa: Annotated[YooKassaClient, Depends(get_yookassa)],
+) -> SubscribeResponse:
+    account = principal.account
+    if account.autorefill_pm_id is None:
+        raise GatewayError(
+            status_code=412,
+            message="Привяжите карту в настройках перед оформлением подписки.",
+            type="invalid_request_error",
+            code="card_not_linked",
+        )
+
+    tier = body.tier
+    amount_kopecks = price_for_tier(tier)
+
+    try:
+        result = await yookassa.charge_recurring(
+            account_id=account.id,
+            amount_kopecks=amount_kopecks,
+            payment_method_id=account.autorefill_pm_id,
+            description=f"Brikko {tier.upper()} subscription, 30 days",
+            metadata={
+                "account_id": str(account.id),
+                "purpose": "subscription_charge",
+                "tier": tier,
+            },
+        )
+    except YooKassaError as exc:
+        log.warning(
+            "subscribe_yookassa_charge_failed",
+            account_id=str(account.id),
+            tier=tier,
+            error=str(exc),
+        )
+        raise upstream_error("Could not initiate subscription charge with the bank gateway.") from exc
+
+    log.info(
+        "subscribe_initiated",
+        account_id=str(account.id),
+        tier=tier,
+        payment_id=result.payment_id,
+        amount_kopecks=amount_kopecks,
+        status=result.status,
+    )
+    return SubscribeResponse(
+        status="pending",
+        payment_id=result.payment_id,
+        tier=tier,
+        amount_kopecks=amount_kopecks,
+    )
+
+
+@router.post(
+    "/subscribe/cancel",
+    status_code=200,
+    summary="Cancel active subscription (keeps access until active_until)",
+    description=(
+        "Sets ``subscription_canceled_at = now()``. The tier keeps working "
+        "through ``subscription_active_until`` (user already paid for the "
+        "period). Phase 2 cron will then NOT auto-renew. Calling cancel on "
+        "an already-cancelled or PAYG account is a no-op (200 with "
+        "``cancelled=false``)."
+    ),
+)
+async def subscribe_cancel(
+    request: Request,
+    principal: Annotated[SessionPrincipal, Depends(require_session)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    account_id = principal.account.id
+    cancelled = await cancel_subscription(db, account_id=account_id)
+    if cancelled:
+        await write_audit(
+            db,
+            user_id=principal.user.id,
+            account_id=account_id,
+            action="subscription_cancelled",
+            request=request,
+            meta={"tier": principal.account.subscription_tier},
+        )
+    await db.commit()
+    return {
+        "cancelled": cancelled,
+        "tier": principal.account.subscription_tier,
+        "active_until": (
+            principal.account.subscription_active_until.isoformat()
+            if principal.account.subscription_active_until
+            else None
+        ),
+    }
+
+
+@router.get(
+    "/subscription",
+    response_model=SubscriptionResponse,
+    summary="Read current subscription state",
+    description=(
+        "Returns ``tier`` (payg/pro/team), ``active_until``, ``canceled_at``, "
+        "and card-link state. ``card_last4`` is reserved for Phase 2 (we'd "
+        "have to fetch the payment-method from ЮKassa to populate it); "
+        "Phase 1 always returns NULL."
+    ),
+)
+async def get_subscription(
+    principal: Annotated[SessionPrincipal, Depends(require_session)],
+) -> SubscriptionResponse:
+    account = principal.account
+    return SubscriptionResponse(
+        tier=account.subscription_tier,
+        active_until=account.subscription_active_until,
+        canceled_at=account.subscription_canceled_at,
+        card_linked=account.autorefill_pm_id is not None,
+        card_last4=None,  # Phase 2
     )

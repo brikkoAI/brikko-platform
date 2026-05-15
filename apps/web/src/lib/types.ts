@@ -589,6 +589,7 @@ export type ApiErrorType =
   | 'seat_limit_reached'
   | 'key_limit_reached'
   | 'mcp_token_limit_reached'
+  | 'card_already_linked'
   | 'server_error'
   | 'network_error'
   | 'unknown_error';

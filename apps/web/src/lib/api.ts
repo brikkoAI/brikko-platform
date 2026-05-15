@@ -1018,6 +1018,36 @@ export const billingApi = {
     runRequest(() => client.delete('billing/autorefill').text(), { url: 'billing/autorefill' }).then(
       () => ({ ok: true as const }),
     ),
+  /**
+   * Привязка карты для будущей подписки + начисления +100 ₽ welcome credit
+   * (CEO 2026-05-15, subscription pivot).
+   *
+   * Контракт (backend в работе — гейт-эндпоинт):
+   *   POST /v1/billing/link-card { return_url }
+   *     → 200 { payment_id, confirmation_url }   — ЮKassa verification payment 1 ₽
+   *     → 409 card_already_linked                — карта уже привязана
+   *
+   * Поток: фронт делает window.location.href = confirmation_url; ЮKassa проводит
+   * 1 ₽ verification (сразу возврат) и redirect на return_url
+   * (= /app/billing/card-linked?status=success), где бэкенд через webhook
+   * сохраняет payment_method_id и начисляет +100 ₽.
+   */
+  linkCard: (payload: { return_url: string }) =>
+    runRequest(
+      () =>
+        client
+          .post('billing/link-card', { json: payload })
+          .json<{ payment_id: string; confirmation_url: string }>(),
+      { url: 'billing/link-card' },
+    ),
+  /**
+   * Отвязать карту. Backend закроет привязку (autorefill отключается автоматом
+   * если был включён). Фронт после успеха инвалидирует account-кеш.
+   */
+  unlinkCard: () =>
+    runRequest(() => client.delete('billing/card').text(), { url: 'billing/card' }).then(
+      () => ({ ok: true as const }),
+    ),
 };
 
 // ============================================================

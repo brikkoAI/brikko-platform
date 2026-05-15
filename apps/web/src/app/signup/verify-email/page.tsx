@@ -2,6 +2,7 @@
 
 import { Mail, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import type { Route } from 'next';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { AuthShell } from '@/components/auth/AuthShell';
@@ -46,7 +47,23 @@ function VerifyEmailContent() {
         toast.success(
           `Email подтверждён. На балансе ${formatKopecks(res.welcome_credit_kop, { forceFraction: true })} welcome-бонуса.`,
         );
-        router.replace('/app');
+        // Subscription pivot (CEO 2026-05-15): если signup пришёл с Pro/Team CTA,
+        // ведём сразу в биллинг с открытым subscribe-flow вместо общего /app.
+        // SignupForm стэшит tier в sessionStorage под TIER_STORAGE_KEY.
+        //
+        // Route-cast: typedRoutes ругается на динамический query-string, но это
+        // на 100% safe — мы whitelist'им tier до 'pro' | 'team' выше.
+        let dest: Route = '/app';
+        try {
+          const stashed = window.sessionStorage.getItem('brikko.signup_intent_tier');
+          if (stashed === 'pro' || stashed === 'team') {
+            dest = `/app/billing?action=subscribe&tier=${stashed}` as Route;
+            window.sessionStorage.removeItem('brikko.signup_intent_tier');
+          }
+        } catch {
+          // privacy mode — оставляем /app.
+        }
+        router.replace(dest);
       })
       .catch(() => {
         // ошибка отображается в state выше — не редиректим.
