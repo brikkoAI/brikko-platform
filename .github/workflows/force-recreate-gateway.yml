@@ -1,0 +1,147 @@
+name: Force-recreate brikko-gateway
+
+# Аварийный workflow для перезапуска brikko-gateway контейнера с актуальным
+# image тегом из .env. Триггерится вручную когда deploy-gateway завершился
+# успешно, но `docker ps` показывает старый image (наблюдалось 2026-05-15
+# после Phase 2 деплоя: .env=sha-5580aec, but container=sha-fa84f7e).
+#
+# Что делает:
+#   1. Показывает текущее состояние (.env, docker ps, compose config)
+#   2. `docker compose pull gateway` — re-pull image
+#   3. `docker compose up -d --force-recreate --no-deps gateway`
+#   4. Healthcheck post-restart
+#
+# read-write: пересоздаёт контейнер. Безопасно — idempotent.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: force-recreate-gateway-production
+  cancel-in-progress: false
+
+jobs:
+  recreate:
+    name: Force recreate gateway on prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_brikko
+          chmod 600 ~/.ssh/id_brikko
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pre-state + recreate + verify
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<'EOSSH'
+          set -uo pipefail
+          cd /opt/brikko
+
+          echo "=========================================="
+          echo "= PRE: .env tag                          ="
+          echo "=========================================="
+          grep -E "^GATEWAY_IMAGE_TAG=" .env || echo "  (no GATEWAY_IMAGE_TAG)"
+
+          echo ""
+          echo "=========================================="
+          echo "= PRE: container image                   ="
+          echo "=========================================="
+          docker inspect brikko-gateway --format='{{.Config.Image}}'
+
+          echo ""
+          echo "=========================================="
+          echo "= PRE: which compose file is used        ="
+          echo "=========================================="
+          ls -la docker-compose*.yml 2>&1 || true
+          if [ -f docker-compose.prod.yml ]; then
+            COMPOSE_FILE="docker-compose.prod.yml"
+          elif [ -f infra/docker-compose.prod.yml ]; then
+            COMPOSE_FILE="infra/docker-compose.prod.yml"
+          else
+            echo "::error::No docker-compose.prod.yml found"
+            exit 1
+          fi
+          echo "Using compose: $COMPOSE_FILE"
+
+          echo ""
+          echo "=========================================="
+          echo "= compose config — resolved image        ="
+          echo "=========================================="
+          docker compose -f "$COMPOSE_FILE" --env-file .env config --services gateway 2>&1 | head -5 || true
+          docker compose -f "$COMPOSE_FILE" --env-file .env config 2>&1 | grep -A 2 "gateway:" | grep "image:" | head -5
+
+          echo ""
+          echo "=========================================="
+          echo "= docker compose pull gateway            ="
+          echo "=========================================="
+          docker compose -f "$COMPOSE_FILE" --env-file .env pull gateway
+
+          echo ""
+          echo "=========================================="
+          echo "= docker compose up -d --force-recreate  ="
+          echo "=========================================="
+          docker compose -f "$COMPOSE_FILE" --env-file .env up -d --no-deps --force-recreate gateway
+
+          echo ""
+          echo "Waiting 15s for container to come up..."
+          sleep 15
+
+          echo ""
+          echo "=========================================="
+          echo "= POST: container image                  ="
+          echo "=========================================="
+          docker inspect brikko-gateway --format='{{.Config.Image}}'
+          docker inspect brikko-gateway --format='ImageID: {{.Image}}'
+          docker inspect brikko-gateway --format='StartedAt: {{.State.StartedAt}}'
+
+          echo ""
+          echo "=========================================="
+          echo "= POST: cron_renewal module check        ="
+          echo "=========================================="
+          docker exec brikko-gateway python -c "import voltari_gateway.scripts.cron_renewal; print('✓ cron_renewal module loads OK')" 2>&1 || echo "✗ FAILED"
+
+          echo ""
+          echo "=========================================="
+          echo "= POST: ad-hoc cron run --job=renewal    ="
+          echo "=========================================="
+          docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=renewal 2>&1 | tail -30 || echo "  exit code: \$?"
+          EOSSH
+
+      - name: Healthcheck
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              -X POST "https://api.brikko.ru/v1/auth/login" \
+              -H "Content-Type: application/json" \
+              --data '{"email":"smoke-test@brikko.ru","password":"wrong"}' \
+              || echo "000")
+            case "$HTTP_CODE" in
+              400|401|422)
+                echo "✓ Gateway responding HTTP $HTTP_CODE"
+                exit 0
+                ;;
+              *)
+                echo "Attempt $i: HTTP $HTTP_CODE — retrying in 10s..."
+                sleep 10
+                ;;
+            esac
+          done
+          echo "::error::Healthcheck failed (last: $HTTP_CODE)"
+          exit 1
