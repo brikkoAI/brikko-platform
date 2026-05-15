@@ -1,6 +1,6 @@
 """subscription_renewal_tracking — add dunning columns + reminders log table.
 
-Revision ID: 0025_subscription_renewal_tracking
+Revision ID: 0025_renewal_tracking
 Revises: 0024_subscription_columns
 Create Date: 2026-05-15
 
@@ -54,7 +54,7 @@ from voltari_gateway.db.migration_helpers import (
     has_table,
 )
 
-revision: str = "0025_subscription_renewal_tracking"
+revision: str = "0025_renewal_tracking"
 down_revision: str | None = "0024_subscription_columns"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
