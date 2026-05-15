@@ -97,4 +97,16 @@ jobs:
               --since "\$HOURS hour ago" --no-pager 2>&1 \
               | grep -iE "error|warning|fail|exception|traceback" | head -30 \
               || echo "  (no errors/warnings)"
+
+          echo ""
+          echo "=========================================="
+          echo "= Container check                        ="
+          echo "=========================================="
+          docker ps --filter "name=brikko-gateway" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" || echo "  docker ps failed"
+
+          echo ""
+          echo "=========================================="
+          echo "= AD-HOC manual run: cron_renewal --job=renewal ="
+          echo "=========================================="
+          docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=renewal 2>&1 | tail -50 || echo "  exit code: \$?"
           EOSSH
