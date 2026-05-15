@@ -1,0 +1,100 @@
+name: Verify Cron Health (subscription)
+
+# On-demand health check для subscription cron на prod VPS.
+# Триггерится вручную (`gh workflow run verify-cron-health.yml`).
+#
+# Что показывает:
+#   - systemctl list-timers brikko-*.timer (когда сработали / следующий fire)
+#   - per-timer status (active/enabled)
+#   - последние 50 строк journal каждого таймера
+#   - есть ли error/warning в логе за последний час
+#
+# Использование:
+#   gh workflow run verify-cron-health.yml
+#   # затем смотреть `gh run view --log` или GitHub UI
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Сколько часов journalctl смотреть назад'
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Health check on prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_brikko
+          chmod 600 ~/.ssh/id_brikko
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check cron health
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          HOURS: ${{ inputs.hours }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<EOSSH
+          set -uo pipefail
+          HOURS="${HOURS:-2}"
+
+          echo "=========================================="
+          echo "= systemctl list-timers brikko-*.timer  ="
+          echo "=========================================="
+          systemctl list-timers 'brikko-*.timer' --all --no-pager
+
+          echo ""
+          echo "=========================================="
+          echo "= Per-timer status                       ="
+          echo "=========================================="
+          for t in renewal reminders retry; do
+            echo "--- brikko-\$t ---"
+            echo "  timer is-active:  \$(systemctl is-active brikko-\$t.timer)"
+            echo "  timer is-enabled: \$(systemctl is-enabled brikko-\$t.timer)"
+            echo "  service last-exit:"
+            systemctl show "brikko-\$t.service" --property=Result,ExecMainStatus,ExecMainStartTimestamp,InvocationID --no-pager 2>/dev/null | sed 's/^/    /'
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "= journal: brikko-renewal (last \$HOURS h) ="
+          echo "=========================================="
+          journalctl -u brikko-renewal --since "\$HOURS hour ago" --no-pager 2>&1 | tail -50
+
+          echo ""
+          echo "=========================================="
+          echo "= journal: brikko-reminders (last \$HOURS h) ="
+          echo "=========================================="
+          journalctl -u brikko-reminders --since "\$HOURS hour ago" --no-pager 2>&1 | tail -50
+
+          echo ""
+          echo "=========================================="
+          echo "= journal: brikko-retry (last \$HOURS h)  ="
+          echo "=========================================="
+          journalctl -u brikko-retry --since "\$HOURS hour ago" --no-pager 2>&1 | tail -50
+
+          echo ""
+          echo "=========================================="
+          echo "= Errors/warnings across all 3 (last \$HOURS h) ="
+          echo "=========================================="
+          journalctl -u brikko-renewal -u brikko-reminders -u brikko-retry \
+              --since "\$HOURS hour ago" --no-pager 2>&1 \
+              | grep -iE "error|warning|fail|exception|traceback" | head -30 \
+              || echo "  (no errors/warnings)"
+          EOSSH
