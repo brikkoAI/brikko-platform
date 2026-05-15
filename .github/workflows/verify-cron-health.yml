@@ -106,6 +106,28 @@ jobs:
 
           echo ""
           echo "=========================================="
+          echo "= .env GATEWAY_IMAGE_TAG                 ="
+          echo "=========================================="
+          grep -E "^GATEWAY_IMAGE_TAG=" /opt/brikko/.env || echo "  (no GATEWAY_IMAGE_TAG line)"
+          echo "Latest 5 GATEWAY_IMAGE_TAG lines if duplicates:"
+          grep -E "GATEWAY_IMAGE_TAG=" /opt/brikko/.env | tail -5
+
+          echo ""
+          echo "=========================================="
+          echo "= docker inspect brikko-gateway          ="
+          echo "=========================================="
+          docker inspect brikko-gateway --format='Image: {{.Config.Image}}'
+          docker inspect brikko-gateway --format='ImageID: {{.Image}}'
+          docker inspect brikko-gateway --format='StartedAt: {{.State.StartedAt}}'
+
+          echo ""
+          echo "=========================================="
+          echo "= Local images for brikko-gateway        ="
+          echo "=========================================="
+          docker images --filter "reference=ghcr.io/brikkoai/brikko-gateway" --format "table {{.Repository}}:{{.Tag}}\t{{.CreatedAt}}\t{{.ID}}"
+
+          echo ""
+          echo "=========================================="
           echo "= AD-HOC manual run: cron_renewal --job=renewal ="
           echo "=========================================="
           docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=renewal 2>&1 | tail -50 || echo "  exit code: \$?"
