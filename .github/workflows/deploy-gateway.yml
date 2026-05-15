@@ -282,12 +282,19 @@ jobs:
             echo "GATEWAY_IMAGE_TAG=${{ needs.build.outputs.image_tag }}" >> .env
           fi
 
-          # 6. Rolling restart gateway. Полагаемся на docker-compose.prod.yml
-          #    с image: \$IMAGE_NAME:\${GATEWAY_IMAGE_TAG} в спецификации.
-          #    Если compose всё ещё на build: ./apps/gateway — workflow упадёт здесь
-          #    с ошибкой compose, что ожидаемо (нужно мигрировать compose-файл
-          #    на image-pull схему, см. PR description).
-          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --pull always gateway
+          # 6. Rolling restart gateway. Двухшаговый процесс:
+          #    (a) explicit pull — отдельный шаг, exit code говорит явно если
+          #        pull не удался (в отличие от `up --pull always` который
+          #        glomps pull в одну транзакцию и в случае denied fall-back'ит
+          #        на старый image)
+          #    (b) up -d --force-recreate — пересоздать с актуальным резолвом
+          #        substitution'ов из .env. Без --force-recreate compose v2
+          #        может (баг 2026-05-15) использовать кешированное состояние
+          #        проекта и pin'ить к старому tag даже когда .env обновлён.
+          echo "Compose pull gateway..."
+          docker compose -f docker-compose.prod.yml --env-file .env pull gateway
+          echo "Compose up -d --force-recreate gateway..."
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --force-recreate gateway
 
           # 7. Очистка старых images (>72h)
           docker image prune -f --filter "until=72h" 2>&1 | tail -3 || true
@@ -295,33 +302,39 @@ jobs:
 
       # Image verification — defence-in-depth против бага 2026-05-15:
       # `docker pull NEW_IMAGE` (step 3) успешно скачал новый image, но
-      # `docker compose up -d --pull always gateway` (step 6) перепулил,
-      # получил `error from registry: denied` (auth state не пропагнулся),
-      # и в fallback взял **старый локальный** image. Healthcheck на /login
-      # этого не ловит — gateway всё равно отвечает 401.
+      # `docker compose up -d --no-deps --pull always gateway` (step 6 ранее)
+      # пересоздал контейнер со СТАРЫМ tag даже после `sed -i .env`. После
+      # фикса step 6 на двухшаговый pull + --force-recreate это не должно
+      # повторяться, но safety net остаётся как detect-only.
       #
-      # Здесь явно проверяем что `docker inspect brikko-gateway` использует
-      # тот image, который мы только что зашили в .env. Если нет — fail.
-      - name: Verify container is on NEW image
+      # Проверяем по DIGEST (Image ID), не по TAG: same-content rebuilds
+      # (например изменения только в workflow YAML) дают same digest для
+      # разных тегов — это не bug, контейнер с правильным кодом.
+      - name: Verify container has NEW image digest
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           NEW_TAG: ${{ needs.build.outputs.image_tag }}
         run: |
           set -euo pipefail
-          echo "Expected image tag: $NEW_TAG"
-          ACTUAL=$(ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
-              "${SSH_USER}@${SSH_HOST}" \
-              "docker inspect brikko-gateway --format='{{.Config.Image}}'" 2>&1)
-          echo "Actual container image: $ACTUAL"
-          if echo "$ACTUAL" | grep -q "$NEW_TAG"; then
-            echo "✓ Container is running expected image"
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<EOSSH
+          set -euo pipefail
+          # Цифровой отпечаток (ImageID) только что pulled image
+          EXPECTED_DIGEST=\$(docker inspect "ghcr.io/brikkoai/brikko-gateway:$NEW_TAG" --format='{{.Id}}')
+          # Image ID запущенного контейнера
+          ACTUAL_DIGEST=\$(docker inspect brikko-gateway --format='{{.Image}}')
+          ACTUAL_TAG=\$(docker inspect brikko-gateway --format='{{.Config.Image}}')
+          echo "Expected digest: \$EXPECTED_DIGEST"
+          echo "Actual digest:   \$ACTUAL_DIGEST (tag: \$ACTUAL_TAG)"
+          if [ "\$EXPECTED_DIGEST" = "\$ACTUAL_DIGEST" ]; then
+            echo "✓ Container has expected image digest"
           else
-            echo "::error::Container is NOT on expected image $NEW_TAG (got: $ACTUAL)"
-            echo "::error::Probably compose pull denied + fallback to local stale image."
-            echo "::error::Run force-recreate-gateway.yml workflow to fix."
+            echo "::error::Container digest does not match expected"
+            echo "::error::Run force-recreate-gateway.yml workflow to fix"
             exit 1
           fi
+          EOSSH
 
       # Healthcheck — POST /v1/auth/login с заведомо invalid creds.
       # 401/400/422 = gateway отвечает корректно. 5xx = упал.
