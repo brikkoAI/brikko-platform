@@ -1105,6 +1105,84 @@ infra/scripts/sops-decrypt-env.sh
 - `infra/cron.d/brikko-docker-prune` — еженедельная очистка docker images / build cache
 - `infra/scripts/smoke-extended.sh` — расширенный smoke после деплоя
 - `infra/bootstrap.sh` — first-time provisioning нового VPS
+- `infra/systemd/brikko-renewal.{service,timer}` — subscription renewal cron (Phase 2)
+- `infra/systemd/brikko-reminders.{service,timer}` — T-3 renewal reminder email cron
+- `infra/systemd/brikko-retry.{service,timer}` — failed-renewal dunning + downgrade cron
 - `docs/branch_protection_setup.md` — ручная настройка GitHub UI
 - `docs/personal_launch_quickstart.md` — пошаговый гайд первого запуска
+
+---
+
+## Subscription Cron Jobs (Phase 2)
+
+Три systemd-таймера на prod VPS управляют lifecycle подписок Pro / Team. Каждый таймер вызывает `docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=<name>` внутри уже бегущего gateway-контейнера — `.env` / DSN / ЮKassa secret не дублируются.
+
+| Timer | OnCalendar | Что делает |
+|---|---|---|
+| `brikko-renewal.timer` | `hourly` | Slot-1 sweep: находит подписки с `active_until` в ближайшие 24h и `renewal_retry_count=0`, шлёт `charge_recurring` через сохранённую карту. |
+| `brikko-reminders.timer` | `*-*-* 10:00 UTC` | Шлёт T-3 email "через 3 дня спишем X ₽" — окно 72–96h до `active_until`. Idempotent через `subscription_reminders_sent`. |
+| `brikko-retry.timer` | `*-*-* 00/6:00 UTC` | Slot 2/3: повторяет charge для `retry_count IN (1, 2)` после 24h/72h. После 3-го fail вызывает downgrade-sweep → tier='payg', email "подписка не продлилась". |
+
+### Установка на VPS
+
+```bash
+# первый раз: скопировать unit-файлы из репо
+sudo cp /opt/brikko/infra/systemd/brikko-*.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# включить таймеры
+sudo systemctl enable --now \
+    brikko-renewal.timer \
+    brikko-reminders.timer \
+    brikko-retry.timer
+```
+
+### Проверка состояния
+
+```bash
+# когда таймер сработал последний раз и когда сработает следующим
+systemctl list-timers brikko-*.timer
+
+# подробный статус одного таймера + последний exit code
+systemctl status brikko-renewal.timer
+systemctl status brikko-renewal.service
+
+# логи (journald)
+journalctl -u brikko-renewal --since "1 hour ago" --no-pager
+journalctl -u brikko-reminders --since today --no-pager
+journalctl -u brikko-retry --since "12 hours ago" --no-pager
+
+# фильтр по структурированному event'у
+journalctl -u brikko-renewal | grep -E "subscription_renewal_tick|subscription_renewal_failed"
+```
+
+### Manual run (debugging / one-shot)
+
+```bash
+# через systemd (логи попадают в journal, как обычно)
+sudo systemctl start brikko-renewal.service
+
+# напрямую внутри контейнера (видно stdout сразу)
+docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=renewal
+docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=reminders
+docker exec brikko-gateway python -m voltari_gateway.scripts.cron_renewal --job=retry
+```
+
+### Что искать при инцидентах
+
+| Симптом | Где смотреть |
+|---|---|
+| Подписки не продлеваются | `journalctl -u brikko-renewal -n 200`; искать `subscription_renewal_failed` / `subscription_renewal_transient`. Транзиентные = ЮKassa 5xx — следующий тик восстановится. Permanent = карта declined. |
+| Юзер пишет "не получил email о продлении" | `psql -c "SELECT * FROM subscription_reminders_sent WHERE account_id=...;"`. Если row есть — email отправлен (или попытка была); если нет — cron его не нашёл (проверить `active_until` относительно окна 72–96h). |
+| Дублирование email | UNIQUE на `(account_id, reminder_type, period_date)` исключает дубль через тот же `period_date`. Если жалуются — проверить, не дрогнул ли `active_until` (Phase 1 webhook не должен его трогать после первой активации). |
+| Аккаунт ушёл в payg, но юзер настаивает что карта рабочая | `journalctl -u brikko-retry | grep <account_id>`; смотрим все 3 fail и error_message. Если ЮKassa возвращала `payment_method_not_found` — клиент действительно потерял её на их стороне (банк перевыпустил). Восстановление: попросить юзера re-link карты в дашборде → запустить `/v1/billing/subscribe` вручную. |
+
+### Аварийное отключение
+
+```bash
+sudo systemctl stop brikko-renewal.timer brikko-reminders.timer brikko-retry.timer
+sudo systemctl disable brikko-renewal.timer brikko-reminders.timer brikko-retry.timer
+```
+
+После — подписки не продлеваются, но **уже-оплаченные** периоды отрабатывают нормально (webhook handler НЕ зависит от cron'а). Юзер уйдёт в downgrade естественным образом когда `active_until` истечёт, но без email-уведомления.
 - `docs/monitoring.md` — UptimeRobot / Sentry / Grafana setup

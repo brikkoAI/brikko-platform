@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly Brikko subscription renewal sweep (slot 1)
+
+[Timer]
+OnCalendar=hourly
+# Catch up after machine downtime — a missed hour should still get a tick
+# when the box comes back up; otherwise a 30-min outage at the top of the
+# hour silently drops a charge.
+Persistent=true
+# Spread load if multiple timers fire at the same minute mark.
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import UTC, datetime
+from datetime import date as _date
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -368,6 +369,22 @@ class Account(Base, TimestampMixin):
     # Заполняется при cancel. Сама подписка остаётся активной до
     # ``subscription_active_until`` — юзер уже заплатил за период.
     subscription_canceled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # --- Subscription renewal / dunning (Phase 2, Alembic 0025) ---
+    # Number of *consecutive* failed renewal-charge attempts. Reset to 0 on
+    # a successful renewal. After ``MAX_RENEWAL_RETRIES`` (3 in
+    # ``subscription_renewal.py``) the cron downgrades tier → 'payg' and
+    # emails the user with a re-link-card CTA. Stays 0 for the steady-state
+    # success case (no SQL writes on the happy path).
+    renewal_retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Timestamp of the most recent failed renewal attempt; drives the
+    # Stripe-style retry schedule (T+24h / T+72h after this stamp). NULL
+    # whenever ``renewal_retry_count == 0``.
+    renewal_last_failed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -738,6 +755,54 @@ class WelcomeCreditsLog(Base):
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (Index("ix_welcome_credits_granted_at", "granted_at"),)
+
+
+class SubscriptionReminderSent(Base):
+    """Idempotency log for subscription lifecycle emails (Phase 2, Alembic 0025).
+
+    Without this table, two cron ticks in the same day (crash-restart of the
+    container, two replicas racing, op-team manual re-run) would email the
+    customer twice about the same renewal. We persist a row per
+    ``(account_id, reminder_type, period_date)`` and rely on the UNIQUE to
+    short-circuit duplicates — the cron catches ``IntegrityError`` and
+    treats it as "already sent".
+
+    Period anchor is the *date* of ``subscription_active_until`` for the
+    period in question, not a timestamp. ``active_until`` is supposed to be
+    a stable datetime, but bypassing minute-level jitter (clock skew between
+    replicas, NTP adjustments) keeps the idempotency key robust.
+
+    Reminder types (extend over time, never reuse a value):
+      * ``renewal_t_minus_3``    — T-3d "we'll charge ₽X in 3 days"
+      * ``renewal_failed``       — "charge attempt N failed, retrying in 24h"
+      * ``renewal_downgraded``   — "3 retries exhausted; tier→payg"
+    """
+
+    __tablename__ = "subscription_reminders_sent"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    reminder_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    period_date: Mapped[_date] = mapped_column(sa.Date(), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "reminder_type",
+            "period_date",
+            name="uq_subscription_reminders_sent",
+        ),
+        Index(
+            "ix_subscription_reminders_sent_account",
+            "account_id",
+            "period_date",
+        ),
+    )
 
 
 class EmailInvite(Base):
@@ -1295,6 +1360,7 @@ __all__ = [
     "Seat",
     "SeatRole",
     "Session",
+    "SubscriptionReminderSent",
     "Tariff",
     "TariffHistory",
     "Transaction",

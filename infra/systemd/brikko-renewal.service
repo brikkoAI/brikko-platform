@@ -1,0 +1,19 @@
+[Unit]
+Description=Brikko — subscription renewal sweep (slot 1, hourly)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/brikko
+# Run inside the existing gateway container so env / DB DSN / ЮKassa creds
+# come from the same secret material the app already uses. No second copy
+# of the .env in the cron unit.
+ExecStart=/usr/bin/docker exec brikko-gateway \
+    python -m voltari_gateway.scripts.cron_renewal --job=renewal
+StandardOutput=journal
+StandardError=journal
+# 30 min cap — renewing every paying account should take seconds, but if
+# ЮKassa is degraded the cron will burn through transient retries; cap
+# protects against a wedged tick blocking the next hourly slot.
+TimeoutStartSec=30min

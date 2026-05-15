@@ -1769,6 +1769,85 @@ async def subscribe_cancel(
     }
 
 
+@router.delete(
+    "/card",
+    status_code=200,
+    summary="Unlink the saved payment method (autorefill_pm_id) from the account",
+    description=(
+        "Clears ``account.autorefill_pm_id`` and disables autorefill. The "
+        "welcome credit already granted (100 ₽ on card-link) is **not** "
+        "clawed back. We do not call ЮKassa to delete the saved card on "
+        "their side — payment methods are scoped to the merchant, so the "
+        "handle becomes irrelevant the moment we forget it.\n\n"
+        "If an active subscription is still running, returns "
+        "``active_subscription_warning=true``. The user keeps tier access "
+        "through the existing ``active_until``; the next renewal sweep "
+        "will fail (no card) and dunning kicks in. Frontend should warn "
+        "the user before this call."
+    ),
+    responses={
+        200: {"description": "Card unlinked (or never linked, idempotent)."},
+    },
+)
+async def unlink_card(
+    request: Request,
+    principal: Annotated[SessionPrincipal, Depends(require_session)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Forget the saved card. Welcome credit stays. Active sub keeps running.
+
+    Edge cases:
+      * No card linked → return ``ok=true, message="no_card_linked"`` (200,
+        idempotent).
+      * Active subscription → set warning flag in response so the frontend
+        can confirm.
+      * autorefill_enabled was True → also disable (a card-less autorefill
+        loop would crash on every tick).
+    """
+    account = principal.account
+    had_card = account.autorefill_pm_id is not None
+    active_until = account.subscription_active_until
+    if active_until is not None and active_until.tzinfo is None:
+        active_until = active_until.replace(tzinfo=UTC)
+    had_active_sub = (
+        account.subscription_tier in PAID_TIERS
+        and active_until is not None
+        and active_until > datetime.now(UTC)
+    )
+
+    if not had_card:
+        return {
+            "ok": True,
+            "message": "no_card_linked",
+            "active_subscription_warning": had_active_sub,
+        }
+
+    account.autorefill_pm_id = None
+    account.autorefill_enabled = False
+    await db.flush()
+
+    await write_audit(
+        db,
+        user_id=principal.user.id,
+        account_id=account.id,
+        action="card_unlinked",
+        request=request,
+        meta={"had_active_subscription": had_active_sub},
+    )
+    await db.commit()
+
+    log.info(
+        "card_unlinked",
+        account_id=str(account.id),
+        had_active_subscription=had_active_sub,
+    )
+    return {
+        "ok": True,
+        "message": "unlinked",
+        "active_subscription_warning": had_active_sub,
+    }
+
+
 @router.get(
     "/subscription",
     response_model=SubscriptionResponse,

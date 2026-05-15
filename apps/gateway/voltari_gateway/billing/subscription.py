@@ -63,6 +63,30 @@ SUBSCRIPTION_PERIOD_DAYS: Final[int] = 30
 #: Format: ``sub:{tier}:{account_id}:{period_yyyymmdd}``.
 SUB_REF_ID_TEMPLATE: Final[str] = "sub:{tier}:{account_id}:{period}"
 
+#: Phase 2 — Stripe-style dunning. After ``MAX_RENEWAL_RETRIES`` consecutive
+#: failed renewal charges, the cron downgrades the account to ``payg`` and
+#: emails the user. Set deliberately low: at 290 ₽/mo it isn't worth chasing
+#: a dead card for a week; the user can re-link and re-subscribe in two
+#: clicks.
+MAX_RENEWAL_RETRIES: Final[int] = 3
+
+#: Schedule of *delays after the previous attempt*, in hours, for the three
+#: retry slots. Attempt 1 runs in the renewal sweep itself (at active_until).
+#: This list controls slots 2 and 3:
+#:   * slot 2: 24 h after slot 1 fail
+#:   * slot 3: 72 h after slot 1 fail (i.e. 48 h after slot 2)
+#: The retry cron consults these deltas against ``renewal_last_failed_at``.
+RENEWAL_RETRY_DELAY_HOURS: Final[tuple[int, ...]] = (24, 72)
+
+#: Idempotency ref_id template for a single renewal *attempt*. One row per
+#: (account, period, attempt #) is enough to make the cron rerun-safe — a
+#: replayed cron tick in the same hour produces the same ref_id and the
+#: UNIQUE on (account_id, ref_id) shorts.
+#: Format: ``renewal:{account_id}:{period_yyyymmdd}:{attempt}``.
+RENEWAL_ATTEMPT_REF_ID_TEMPLATE: Final[str] = (
+    "renewal:{account_id}:{period}:{attempt}"
+)
+
 
 Tier = Literal["pro", "team"]
 
@@ -276,7 +300,10 @@ async def cancel_subscription(
 
 
 __all__ = [
+    "MAX_RENEWAL_RETRIES",
     "PAID_TIERS",
+    "RENEWAL_ATTEMPT_REF_ID_TEMPLATE",
+    "RENEWAL_RETRY_DELAY_HOURS",
     "SUBSCRIPTION_PERIOD_DAYS",
     "SUB_REF_ID_TEMPLATE",
     "TIER_PAYG",

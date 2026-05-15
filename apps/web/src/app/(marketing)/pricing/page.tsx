@@ -1,26 +1,29 @@
 import { PricingCards } from '@/components/marketing/PricingCards';
-import { SavingsCalculator } from '@/components/marketing/SavingsCalculator';
+// SavingsCalculator скрыт 2026-05-15 — использовал старые цены Pro 1990 / Team 4990.
+// Импорт оставлен закомментированным как маркер для будущего переписывания
+// под trial+subscription model (Phase 2).
+// import { SavingsCalculator } from '@/components/marketing/SavingsCalculator';
 import { FAQ } from '@/components/marketing/FAQ';
 
 export const metadata = {
   title: 'Тарифы',
-  description: 'Pay-as-you-go: 0,02 ₽ за запрос. Никаких подписок. 100 запросов в день бесплатно навсегда.',
+  description:
+    '200 ₽ welcome credit на пробу. После — подписка Pro 290 ₽/мес или Team 1490 ₽/мес.',
 };
 
 /**
- * /pricing — Cream Studio v6 + pay-per-use pivot (2026-05-14).
+ * /pricing — Cream Studio v6 + trial+subscription pivot (2026-05-15).
  *
- * Hero (H1 + subhead) → PricingCards (pay-per-use card) → HowItWorks → FAQ.
+ * Hero (H1 + subhead) → PricingCards (Trial / Pro / Team) → HowItWorks → FAQ.
  *
  * UX: после rebrand'а перенесли FAQ из главной сюда (на странице /pricing
  * вопросы про billing более релевантны и снимают возражения перед оплатой).
  * Главная остаётся со своим FAQ-блоком — это не дубль, общая разметка
  * запросов одна, но оба места видят разные cohorts.
  *
- * NB 2026-05-14: SavingsCalculator (Brikko vs Wise direct billing) на этой
- * странице устарел под pay-per-use модель — он считал стоимость токенов
- * у провайдеров напрямую. Отдельная задача: переделать под «0,02 ₽ за
- * запрос × N запросов в день» или убрать совсем.
+ * NB 2026-05-15: SavingsCalculator скрыт — он считал экономию vs Wise
+ * по старым ценам Pro 1990 / Team 4990. Переписать под trial+subscription
+ * (200 ₽ welcome → Pro 290 / Team 1490) — отдельная задача Phase 2.
  */
 export default function PricingPage() {
   return (
@@ -42,11 +45,11 @@ export default function PricingPage() {
           className="brikko-h1"
           style={{ fontSize: 'clamp(40px, 5vw, 80px)', maxWidth: '14ch' }}
         >
-          Pay-as-<span className="brikko-h2-italic">you-go.</span> Без подписок.
+          Тариф<span className="brikko-h2-italic">ы.</span>
         </h1>
         <p className="brikko-lede" style={{ marginBottom: 0 }}>
-          Один тариф для всех каналов Brikko. 0,02 ₽ за запрос, 100 запросов в
-          день бесплатно навсегда, welcome 100 ₽ при регистрации.
+          200 ₽ welcome credit на пробу. После — подписка Pro 290 ₽/мес или
+          Team 1490 ₽/мес. Top-up в рублях для постоянной работы недоступен.
         </p>
       </section>
 
@@ -54,9 +57,26 @@ export default function PricingPage() {
 
       <PricingCards showHeader={false} />
 
-      <div className="brikko-divider" aria-hidden="true" />
-
-      <SavingsCalculator />
+      <div
+        style={{
+          maxWidth: 1400,
+          margin: '0 auto',
+          padding: '24px 6vw 0',
+          position: 'relative',
+          zIndex: 2,
+        }}
+      >
+        <p
+          style={{
+            fontSize: 12,
+            color: 'var(--fg-faint)',
+            margin: 0,
+            textAlign: 'center',
+          }}
+        >
+          (Калькулятор экономии временно скрыт — обновляется под новые тарифы.)
+        </p>
+      </div>
 
       <div className="brikko-divider" aria-hidden="true" />
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Brikko — subscription T-3 renewal reminders (daily)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/brikko
+ExecStart=/usr/bin/docker exec brikko-gateway \
+    python -m voltari_gateway.scripts.cron_renewal --job=reminders
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=15min

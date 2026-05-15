@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Brikko subscription T-3 renewal reminders at 10:00 UTC
+
+[Timer]
+# 10:00 UTC = 13:00 MSK — morning-MSK delivery for the typical RU user
+# base. Picked over evening to maximise read-rate on the same business day.
+OnCalendar=*-*-* 10:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

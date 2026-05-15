@@ -1,0 +1,12 @@
+[Unit]
+Description=Brikko subscription dunning retry/downgrade every 6h
+
+[Timer]
+# Every 6 hours — slot 2 (T+24h) and slot 3 (T+72h) granularity is enough
+# at 6h; hourly would also work, but burns more cron noise for no win.
+OnCalendar=*-*-* 00/6:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
