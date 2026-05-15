@@ -293,6 +293,36 @@ jobs:
           docker image prune -f --filter "until=72h" 2>&1 | tail -3 || true
           EOSSH
 
+      # Image verification — defence-in-depth против бага 2026-05-15:
+      # `docker pull NEW_IMAGE` (step 3) успешно скачал новый image, но
+      # `docker compose up -d --pull always gateway` (step 6) перепулил,
+      # получил `error from registry: denied` (auth state не пропагнулся),
+      # и в fallback взял **старый локальный** image. Healthcheck на /login
+      # этого не ловит — gateway всё равно отвечает 401.
+      #
+      # Здесь явно проверяем что `docker inspect brikko-gateway` использует
+      # тот image, который мы только что зашили в .env. Если нет — fail.
+      - name: Verify container is on NEW image
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          NEW_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          echo "Expected image tag: $NEW_TAG"
+          ACTUAL=$(ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" \
+              "docker inspect brikko-gateway --format='{{.Config.Image}}'" 2>&1)
+          echo "Actual container image: $ACTUAL"
+          if echo "$ACTUAL" | grep -q "$NEW_TAG"; then
+            echo "✓ Container is running expected image"
+          else
+            echo "::error::Container is NOT on expected image $NEW_TAG (got: $ACTUAL)"
+            echo "::error::Probably compose pull denied + fallback to local stale image."
+            echo "::error::Run force-recreate-gateway.yml workflow to fix."
+            exit 1
+          fi
+
       # Healthcheck — POST /v1/auth/login с заведомо invalid creds.
       # 401/400/422 = gateway отвечает корректно. 5xx = упал.
       # 5 попыток с retry, потому что после restart нужно ~15-20s до readiness.
