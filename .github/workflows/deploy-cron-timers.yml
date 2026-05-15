@@ -1,0 +1,118 @@
+name: Deploy Cron Timers (subscription renewal)
+
+# Устанавливает / обновляет systemd unit-файлы для Phase 2 subscription cron
+# (brikko-renewal / brikko-reminders / brikko-retry) на prod VPS.
+#
+# Триггер:
+#   - workflow_dispatch (manual) — для первичной установки и переустановки
+#   - push в main с изменениями в infra/systemd/brikko-*.{service,timer}
+#
+# Что делает:
+#   1. SCP unit-файлы в /etc/systemd/system/
+#   2. systemctl daemon-reload
+#   3. systemctl enable --now каждый таймер (idempotent)
+#   4. Проверка `list-timers` чтобы убедиться что все три активны
+#
+# Зависимости:
+#   - Контейнер brikko-gateway уже запущен (deploy-gateway завершён хотя бы один раз)
+#   - У deploy-пользователя есть sudo NOPASSWD на systemctl и cp в /etc/systemd
+#
+# Деплой кода cron_renewal.py идёт через deploy-gateway.yml (это лишь активирует
+# таймеры, которые вызывают `docker exec brikko-gateway python -m
+# voltari_gateway.scripts.cron_renewal`).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/systemd/brikko-*.service'
+      - 'infra/systemd/brikko-*.timer'
+      - '.github/workflows/deploy-cron-timers.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cron-timers-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Install systemd timers on prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_brikko
+          chmod 600 ~/.ssh/id_brikko
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH key configured."
+
+      - name: Copy unit files to VPS
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          # Кладём в staging dir под deploy-юзером, потом sudo move в /etc/systemd
+          # (deploy-юзер не имеет прав писать в /etc/systemd напрямую).
+          scp -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              infra/systemd/brikko-renewal.service \
+              infra/systemd/brikko-renewal.timer \
+              infra/systemd/brikko-reminders.service \
+              infra/systemd/brikko-reminders.timer \
+              infra/systemd/brikko-retry.service \
+              infra/systemd/brikko-retry.timer \
+              "${SSH_USER}@${SSH_HOST}:/tmp/"
+          echo "Unit files staged in /tmp/"
+
+      - name: Install + enable timers
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
+              "${SSH_USER}@${SSH_HOST}" bash -s <<'EOSSH'
+          set -euo pipefail
+          echo "=== Installing systemd unit files ==="
+          sudo mv /tmp/brikko-renewal.service /etc/systemd/system/
+          sudo mv /tmp/brikko-renewal.timer /etc/systemd/system/
+          sudo mv /tmp/brikko-reminders.service /etc/systemd/system/
+          sudo mv /tmp/brikko-reminders.timer /etc/systemd/system/
+          sudo mv /tmp/brikko-retry.service /etc/systemd/system/
+          sudo mv /tmp/brikko-retry.timer /etc/systemd/system/
+          sudo chown root:root /etc/systemd/system/brikko-*.{service,timer}
+          sudo chmod 644 /etc/systemd/system/brikko-*.{service,timer}
+
+          echo "=== daemon-reload ==="
+          sudo systemctl daemon-reload
+
+          echo "=== Enabling timers ==="
+          sudo systemctl enable --now brikko-renewal.timer
+          sudo systemctl enable --now brikko-reminders.timer
+          sudo systemctl enable --now brikko-retry.timer
+
+          echo "=== Active timers ==="
+          systemctl list-timers brikko-*.timer --all --no-pager
+
+          echo "=== Per-timer status ==="
+          for t in renewal reminders retry; do
+            echo "--- brikko-$t.timer ---"
+            systemctl is-active "brikko-$t.timer" || true
+            systemctl is-enabled "brikko-$t.timer" || true
+          done
+
+          echo "✅ Cron timers installed and enabled."
+          EOSSH
