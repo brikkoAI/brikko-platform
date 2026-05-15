@@ -39,7 +39,9 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/id_brikko -o BatchMode=yes -o ConnectTimeout=15 \
               "${SSH_USER}@${SSH_HOST}" bash -s <<'EOSSH'
-          set -euo pipefail
+          # Don't use pipefail — некоторые queries могут падать на mismatched
+          # column names, продолжаем чтобы получить остальные метрики.
+          set +e
           cd /opt/brikko
 
           # Load .env to get POSTGRES_USER / POSTGRES_DB / POSTGRES_PASSWORD
@@ -71,10 +73,10 @@ jobs:
           echo "=========================================="
           echo "Total transactions:"
           $PSQL_CMD -c "SELECT COUNT(*) FROM transactions;"
-          echo "By kind, last 7 days:"
-          $PSQL_CMD -c "SELECT kind, COUNT(*), SUM(amount_kopecks)::bigint/100 as rub FROM transactions WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY kind ORDER BY COUNT(*) DESC;"
+          echo "By type, last 7 days:"
+          $PSQL_CMD -c "SELECT type, COUNT(*), SUM(amount_kopecks)::bigint/100 as rub FROM transactions WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY type ORDER BY COUNT(*) DESC;" 2>&1 || true
           echo "Last 10 transactions:"
-          $PSQL_CMD -c "SELECT created_at::date, kind, amount_kopecks/100 as rub, ref_id FROM transactions ORDER BY created_at DESC LIMIT 10;"
+          $PSQL_CMD -c "SELECT created_at::date, type, amount_kopecks/100 as rub, ref_id FROM transactions ORDER BY created_at DESC LIMIT 10;" 2>&1 || true
 
           echo ""
           echo "=========================================="
